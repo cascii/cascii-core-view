@@ -145,6 +145,7 @@ impl FontSizing {
 ///
 /// A tuple of (x, y) position in pixels.
 #[inline]
+#[allow(dead_code)]
 pub fn char_position(col: usize, row: usize, font_size: f64) -> (f64, f64) {
     let sizing = FontSizing::default();
     let x = col as f64 * sizing.char_width(font_size);
