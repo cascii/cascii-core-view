@@ -38,12 +38,17 @@
 
 mod animation;
 mod data;
+mod loader;
 mod parser;
 pub mod render;
 mod sizing;
 
 pub use animation::{AnimationController, AnimationState, LoopMode};
 pub use data::{CFrameData, Frame, FrameFile};
+pub use loader::{
+    load_color_frames, load_text_frames, FrameDataProvider, FrameLoaderState, LoadResult,
+    LoadingPhase, LoadingProgress,
+};
 pub use parser::{parse_cframe, parse_cframe_text, ParseError};
 pub use render::{RenderConfig, RenderResult};
 pub use sizing::FontSizing;
