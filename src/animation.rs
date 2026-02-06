@@ -1,18 +1,13 @@
 //! Animation controller for frame playback.
 
 /// Loop mode for animation playback.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum LoopMode {
     /// Stop at the end of the animation
     Once,
     /// Loop back to start when reaching the end
+    #[default]
     Loop,
-}
-
-impl Default for LoopMode {
-    fn default() -> Self {
-        Self::Loop
-    }
 }
 
 /// Current state of the animation.
