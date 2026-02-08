@@ -172,6 +172,72 @@ pub mod web {
     use wasm_bindgen::JsCast;
     use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
+    /// In-memory cache of pre-rendered canvases for color frames.
+    ///
+    /// Caching color frames as offscreen canvases allows playback to use
+    /// a single `drawImage` call per frame.
+    #[derive(Clone, Debug, Default)]
+    pub struct FrameCanvasCache {
+        canvases: Vec<Option<HtmlCanvasElement>>,
+        font_size_key: i32,
+    }
+
+    impl FrameCanvasCache {
+        /// Create an empty cache sized for `frame_count` entries.
+        pub fn with_frame_count(frame_count: usize) -> Self {
+            let mut cache = Self::default();
+            cache.resize(frame_count);
+            cache
+        }
+
+        /// Resize cache to match the number of frames.
+        pub fn resize(&mut self, frame_count: usize) {
+            if self.canvases.len() != frame_count {
+                self.canvases.resize_with(frame_count, || None);
+            }
+        }
+
+        /// Remove all cached canvases and reset sizing key.
+        pub fn clear(&mut self) {
+            self.canvases.clear();
+            self.font_size_key = 0;
+        }
+
+        /// Invalidate all cached canvases when font size changes.
+        ///
+        /// Returns `true` when the cache was invalidated.
+        pub fn invalidate_for_font_size_key(&mut self, font_size_key: i32) -> bool {
+            if self.font_size_key == font_size_key {
+                return false;
+            }
+            self.font_size_key = font_size_key;
+            for entry in &mut self.canvases {
+                *entry = None;
+            }
+            true
+        }
+
+        /// Cache a pre-rendered canvas for a frame.
+        pub fn store(&mut self, frame_index: usize, canvas: HtmlCanvasElement) {
+            if frame_index < self.canvases.len() {
+                self.canvases[frame_index] = Some(canvas);
+            }
+        }
+
+        /// Get a cached canvas for a frame.
+        pub fn get(&self, frame_index: usize) -> Option<HtmlCanvasElement> {
+            self.canvases.get(frame_index).and_then(|c| c.clone())
+        }
+
+        /// Returns `true` when a frame is already cached.
+        pub fn has(&self, frame_index: usize) -> bool {
+            self.canvases
+                .get(frame_index)
+                .map(|c| c.is_some())
+                .unwrap_or(false)
+        }
+    }
+
     /// Render a CFrameData directly to an HTML canvas.
     ///
     /// ## Arguments
@@ -228,6 +294,65 @@ pub mod web {
         }
 
         Ok(())
+    }
+
+    /// Render a CFrameData to a newly created offscreen canvas.
+    ///
+    /// The resulting canvas can be cached and quickly drawn to the visible canvas
+    /// using `draw_cached_canvas`.
+    pub fn render_to_offscreen_canvas(
+        cframe: &CFrameData,
+        config: &RenderConfig,
+    ) -> Result<HtmlCanvasElement, String> {
+        let window = web_sys::window().ok_or("No window available")?;
+        let document = window.document().ok_or("No document available")?;
+        let canvas = document
+            .create_element("canvas")
+            .map_err(|_| "Failed to create canvas element")?
+            .dyn_into::<HtmlCanvasElement>()
+            .map_err(|_| "Failed to cast element to HtmlCanvasElement")?;
+
+        render_to_canvas(cframe, &canvas, config)?;
+        Ok(canvas)
+    }
+
+    /// Draw a pre-rendered offscreen canvas onto a visible canvas.
+    pub fn draw_cached_canvas(
+        target: &HtmlCanvasElement,
+        cached: &HtmlCanvasElement,
+    ) -> Result<(), String> {
+        target.set_width(cached.width());
+        target.set_height(cached.height());
+
+        let ctx = target
+            .get_context("2d")
+            .map_err(|_| "Failed to get 2d context")?
+            .ok_or("No 2d context available")?
+            .dyn_into::<CanvasRenderingContext2d>()
+            .map_err(|_| "Failed to cast to CanvasRenderingContext2d")?;
+
+        // Reset any existing transform state before drawing cached content.
+        ctx.set_transform(1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+            .map_err(|_| "Failed to reset transform")?;
+        ctx.draw_image_with_html_canvas_element(cached, 0.0, 0.0)
+            .map_err(|_| "Failed to draw cached canvas")?;
+        Ok(())
+    }
+
+    /// Draw a frame directly from cache when available.
+    ///
+    /// Returns `Ok(true)` when the frame was present in cache and drawn.
+    pub fn draw_frame_from_cache(
+        target: &HtmlCanvasElement,
+        cache: &FrameCanvasCache,
+        frame_index: usize,
+    ) -> Result<bool, String> {
+        if let Some(cached) = cache.get(frame_index) {
+            draw_cached_canvas(target, &cached)?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
 }
 
