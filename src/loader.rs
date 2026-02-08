@@ -302,6 +302,23 @@ where
     Ok(())
 }
 
+/// Yield control back to the browser event loop.
+///
+/// Useful in long-running WASM loops to keep UI responsive while background
+/// loading or pre-rendering progresses.
+#[cfg(feature = "web")]
+pub async fn yield_to_event_loop() {
+    let promise = js_sys::Promise::new(&mut |resolve, _| {
+        if let Some(window) = web_sys::window() {
+            let _ = window
+                .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 0);
+        } else {
+            let _ = resolve.call0(&wasm_bindgen::JsValue::NULL);
+        }
+    });
+    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
