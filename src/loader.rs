@@ -230,33 +230,21 @@ pub type LoadResult<T> = Result<T, String>;
 /// No `Send` bounds — works in both native and WASM (single-threaded) contexts.
 pub trait FrameDataProvider {
     /// Get the list of frame files in a directory
-    fn get_frame_files(
-        &self,
-        directory: &str,
-    ) -> impl std::future::Future<Output = LoadResult<Vec<FrameFile>>>;
+    fn get_frame_files(&self, directory: &str) -> impl std::future::Future<Output = LoadResult<Vec<FrameFile>>>;
 
     /// Read frame text content
-    fn read_frame_text(
-        &self,
-        path: &str,
-    ) -> impl std::future::Future<Output = LoadResult<String>>;
+    fn read_frame_text(&self, path: &str) -> impl std::future::Future<Output = LoadResult<String>>;
 
     /// Read raw .cframe bytes for the given text frame path.
     ///
     /// Returns `Ok(None)` if no .cframe file exists for this frame.
     /// The caller (orchestrator) handles parsing via `parse_cframe`.
-    fn read_cframe_bytes(
-        &self,
-        txt_path: &str,
-    ) -> impl std::future::Future<Output = LoadResult<Option<Vec<u8>>>>;
+    fn read_cframe_bytes(&self, txt_path: &str) -> impl std::future::Future<Output = LoadResult<Option<Vec<u8>>>>;
 }
 
 /// Phase 1: load all text frames sequentially, return them along with the
 /// file list (needed for Phase 2 color loading).
-pub async fn load_text_frames<P: FrameDataProvider>(
-    provider: &P,
-    directory: &str,
-) -> LoadResult<(Vec<Frame>, Vec<FrameFile>)> {
+pub async fn load_text_frames<P: FrameDataProvider>(provider: &P, directory: &str) -> LoadResult<(Vec<Frame>, Vec<FrameFile>)> {
     let frame_files = provider.get_frame_files(directory).await?;
 
     if frame_files.is_empty() {
@@ -276,30 +264,42 @@ pub async fn load_text_frames<P: FrameDataProvider>(
 ///
 /// For each frame file, reads raw .cframe bytes, parses them via
 /// `parse_cframe`, then calls `on_frame(index, total, Option<CFrameData>)`
-/// so the caller can store the result. After each frame, calls `yield_fn()`
-/// to yield to the event loop (important in single-threaded WASM contexts).
-pub async fn load_color_frames<P, F, Y, YFut>(
-    provider: &P,
-    frame_files: &[FrameFile],
-    on_frame: F,
-    yield_fn: Y,
-) -> LoadResult<()>
-where
-    P: FrameDataProvider,
-    F: Fn(usize, usize, Option<CFrameData>),
-    Y: Fn() -> YFut,
-    YFut: std::future::Future<Output = ()>,
-{
+/// so the caller can store the result. Calls `yield_fn()` before and after
+/// each frame to keep the UI responsive (important in single-threaded WASM
+/// contexts).
+pub async fn load_color_frames<P, F, Y, YFut>(provider: &P, frame_files: &[FrameFile], on_frame: F, yield_fn: Y) -> LoadResult<()> where P: FrameDataProvider, F: Fn(usize, usize, Option<CFrameData>), Y: Fn() -> YFut, YFut: std::future::Future<Output = ()> {
     let total = frame_files.len();
     for (i, frame_file) in frame_files.iter().enumerate() {
+        // Let animation/input callbacks run before potentially heavy read+parse work.
+        yield_fn().await;
+
         let cframe = match provider.read_cframe_bytes(&frame_file.path).await? {
             Some(bytes) => crate::parse_cframe(&bytes).ok(),
             None => None,
         };
         on_frame(i, total, cframe);
+
+        // Yield again after storing the decoded frame.
         yield_fn().await;
     }
     Ok(())
+}
+
+/// Yield control back to the browser event loop.
+///
+/// Useful in long-running WASM loops to keep UI responsive while background
+/// loading or pre-rendering progresses.
+#[cfg(feature = "web")]
+pub async fn yield_to_event_loop() {
+    let promise = js_sys::Promise::new(&mut |resolve, _| {
+        if let Some(window) = web_sys::window() {
+            let _ = window
+                .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 0);
+        } else {
+            let _ = resolve.call0(&wasm_bindgen::JsValue::NULL);
+        }
+    });
+    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
 }
 
 #[cfg(test)]

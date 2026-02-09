@@ -52,3 +52,9 @@ pub use sizing::FontSizing;
 
 #[cfg(feature = "web")]
 pub use render::web::render_to_canvas;
+#[cfg(feature = "web")]
+pub use loader::yield_to_event_loop;
+#[cfg(feature = "web")]
+pub use render::web::{
+    draw_cached_canvas, draw_frame_from_cache, render_to_offscreen_canvas, FrameCanvasCache,
+};
