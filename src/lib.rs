@@ -37,14 +37,18 @@
 //! ```
 
 mod animation;
+mod color;
 mod data;
+mod details;
 mod loader;
 mod parser;
 pub mod render;
 mod sizing;
 
 pub use animation::{AnimationController, AnimationState, LoopMode};
+pub use color::{parse_color, FrameColors};
 pub use data::{CFrameData, Frame, FrameFile};
+pub use details::ProjectDetails;
 pub use loader::{load_color_frames, load_text_frames, FrameDataProvider, FrameLoaderState, LoadResult, LoadingPhase, LoadingProgress};
 pub use parser::{parse_cframe, parse_cframe_text, ParseError};
 pub use render::{RenderConfig, RenderResult};
@@ -55,6 +59,4 @@ pub use render::web::render_to_canvas;
 #[cfg(feature = "web")]
 pub use loader::yield_to_event_loop;
 #[cfg(feature = "web")]
-pub use render::web::{
-    draw_cached_canvas, draw_frame_from_cache, render_to_offscreen_canvas, FrameCanvasCache,
-};
+pub use render::web::{draw_cached_canvas, draw_frame_from_cache, render_to_offscreen_canvas, FrameCanvasCache};

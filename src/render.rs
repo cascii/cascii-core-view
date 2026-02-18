@@ -158,11 +158,7 @@ pub fn render_cframe(cframe: &CFrameData, config: &RenderConfig) -> RenderResult
         }
     }
 
-    RenderResult {
-        width: canvas_width,
-        height: canvas_height,
-        batches,
-    }
+    RenderResult {width: canvas_width, height: canvas_height, batches}
 }
 
 /// Web-specific rendering implementation.
@@ -259,11 +255,7 @@ pub mod web {
     /// let canvas: web_sys::HtmlCanvasElement = // ... get canvas element
     /// render_to_canvas(&cframe, &canvas, &RenderConfig::new(12.0))?;
     /// ```
-    pub fn render_to_canvas(
-        cframe: &CFrameData,
-        canvas: &HtmlCanvasElement,
-        config: &RenderConfig,
-    ) -> Result<(), String> {
+    pub fn render_to_canvas(cframe: &CFrameData, canvas: &HtmlCanvasElement, config: &RenderConfig) -> Result<(), String> {
         let result = render_cframe(cframe, config);
 
         // Set canvas dimensions
@@ -300,10 +292,7 @@ pub mod web {
     ///
     /// The resulting canvas can be cached and quickly drawn to the visible canvas
     /// using `draw_cached_canvas`.
-    pub fn render_to_offscreen_canvas(
-        cframe: &CFrameData,
-        config: &RenderConfig,
-    ) -> Result<HtmlCanvasElement, String> {
+    pub fn render_to_offscreen_canvas(cframe: &CFrameData, config: &RenderConfig) -> Result<HtmlCanvasElement, String> {
         let window = web_sys::window().ok_or("No window available")?;
         let document = window.document().ok_or("No document available")?;
         let canvas = document
@@ -317,10 +306,7 @@ pub mod web {
     }
 
     /// Draw a pre-rendered offscreen canvas onto a visible canvas.
-    pub fn draw_cached_canvas(
-        target: &HtmlCanvasElement,
-        cached: &HtmlCanvasElement,
-    ) -> Result<(), String> {
+    pub fn draw_cached_canvas(target: &HtmlCanvasElement, cached: &HtmlCanvasElement) -> Result<(), String> {
         target.set_width(cached.width());
         target.set_height(cached.height());
 
@@ -342,11 +328,7 @@ pub mod web {
     /// Draw a frame directly from cache when available.
     ///
     /// Returns `Ok(true)` when the frame was present in cache and drawn.
-    pub fn draw_frame_from_cache(
-        target: &HtmlCanvasElement,
-        cache: &FrameCanvasCache,
-        frame_index: usize,
-    ) -> Result<bool, String> {
+    pub fn draw_frame_from_cache(target: &HtmlCanvasElement, cache: &FrameCanvasCache, frame_index: usize) -> Result<bool, String> {
         if let Some(cached) = cache.get(frame_index) {
             draw_cached_canvas(target, &cached)?;
             Ok(true)
