@@ -1,0 +1,107 @@
+#!/bin/bash
+# Git hook to automatically bump version based on commit message prefix
+# Only bumps once per branch (checks git history, not a tracking file)
+#
+# Commit message prefixes:
+#   release(...): ...   -> Bumps major version (X.0.0) - priority 3
+#   feature(...): ...   -> Bumps minor version (0.X.0) - priority 2
+#   fix(...): ...       -> Bumps patch version (0.0.X) - priority 1
+#   anything else       -> No version bump
+
+COMMIT_MSG_FILE=$1
+COMMIT_SOURCE=$2
+
+# Only run for regular commits (not merge, squash, etc.)
+if [ -z "$COMMIT_SOURCE" ] || [ "$COMMIT_SOURCE" = "message" ]; then
+    REPO_ROOT=$(git rev-parse --show-toplevel)
+    BUMP_SCRIPT="$REPO_ROOT/scripts/bump_version.py"
+
+    if [ ! -f "$BUMP_SCRIPT" ]; then
+        exit 0
+    fi
+
+    CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+    if [ -z "$CURRENT_BRANCH" ] || [ "$CURRENT_BRANCH" = "HEAD" ]; then
+        exit 0
+    fi
+
+    # Skip if on master/main
+    if [ "$CURRENT_BRANCH" = "master" ] || [ "$CURRENT_BRANCH" = "main" ]; then
+        exit 0
+    fi
+
+    FIRST_LINE=$(head -n 1 "$COMMIT_MSG_FILE" 2>/dev/null)
+    if [ -z "$FIRST_LINE" ]; then
+        exit 0
+    fi
+
+    # Determine bump type from commit message
+    FIRST_LINE_LOWER=$(echo "$FIRST_LINE" | tr '[:upper:]' '[:lower:]')
+    NEW_BUMP_TYPE=""
+    NEW_BUMP_PRIORITY=0
+
+    if echo "$FIRST_LINE_LOWER" | grep -q "^release("; then
+        NEW_BUMP_TYPE="major"
+        NEW_BUMP_PRIORITY=3
+    elif echo "$FIRST_LINE_LOWER" | grep -q "^feature("; then
+        NEW_BUMP_TYPE="minor"
+        NEW_BUMP_PRIORITY=2
+    elif echo "$FIRST_LINE_LOWER" | grep -q "^fix("; then
+        NEW_BUMP_TYPE="patch"
+        NEW_BUMP_PRIORITY=1
+    fi
+
+    if [ -z "$NEW_BUMP_TYPE" ]; then
+        exit 0
+    fi
+
+    # Find the merge base with master (where this branch diverged)
+    MERGE_BASE=$(git merge-base HEAD master 2>/dev/null || git merge-base HEAD main 2>/dev/null)
+    if [ -z "$MERGE_BASE" ]; then
+        MERGE_BASE="HEAD~100"  # fallback
+    fi
+
+    # Check if there's already been a version-bumping commit on this branch
+    EXISTING_BUMP_PRIORITY=0
+
+    while IFS= read -r commit_msg; do
+        commit_lower=$(echo "$commit_msg" | tr '[:upper:]' '[:lower:]')
+        if echo "$commit_lower" | grep -q "^release("; then
+            [ 3 -gt $EXISTING_BUMP_PRIORITY ] && EXISTING_BUMP_PRIORITY=3
+        elif echo "$commit_lower" | grep -q "^feature("; then
+            [ 2 -gt $EXISTING_BUMP_PRIORITY ] && EXISTING_BUMP_PRIORITY=2
+        elif echo "$commit_lower" | grep -q "^fix("; then
+            [ 1 -gt $EXISTING_BUMP_PRIORITY ] && EXISTING_BUMP_PRIORITY=1
+        fi
+    done < <(git log --format="%s" "$MERGE_BASE"..HEAD 2>/dev/null)
+
+    # If new bump is not higher priority than what's already on the branch, skip
+    if [ $NEW_BUMP_PRIORITY -le $EXISTING_BUMP_PRIORITY ]; then
+        exit 0
+    fi
+
+    # Get the version at the merge base (original version before any bumps on this branch)
+    ORIGINAL_VERSION=$(git show "$MERGE_BASE:Cargo.toml" 2>/dev/null | grep '^version' | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
+
+    if [ -z "$ORIGINAL_VERSION" ]; then
+        # Fallback to current version
+        ORIGINAL_VERSION=$(grep '^version' "$REPO_ROOT/Cargo.toml" | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
+    fi
+
+    # Run version bump script
+    OUTPUT=$(python3 "$BUMP_SCRIPT" "$FIRST_LINE" "$ORIGINAL_VERSION" 2>&1)
+    BUMP_EXIT_CODE=$?
+
+    if [ $BUMP_EXIT_CODE -eq 0 ] && echo "$OUTPUT" | grep -q "Version bumped"; then
+        git add "$REPO_ROOT/Cargo.toml" 2>/dev/null
+
+        if [ -f "$REPO_ROOT/Cargo.lock" ]; then
+            (cd "$REPO_ROOT" && cargo update --workspace 2>/dev/null)
+            git add "$REPO_ROOT/Cargo.lock" 2>/dev/null
+        fi
+
+        echo "$OUTPUT"
+    fi
+fi
+
+exit 0

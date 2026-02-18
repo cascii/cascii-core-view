@@ -1,0 +1,8 @@
+#!/bin/bash
+# Post-commit hook: amend the commit to include version bump files
+# that were staged by the prepare-commit-msg hook but missed the commit.
+
+STAGED=$(git diff --cached --name-only 2>/dev/null)
+if echo "$STAGED" | grep -q "Cargo.toml\|Cargo.lock"; then
+    git commit --amend --no-edit --no-verify >/dev/null 2>&1
+fi
