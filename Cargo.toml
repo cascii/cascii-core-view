@@ -1,6 +1,6 @@
 [package]
 name = "cascii-core-view"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "Core frame display and animation library for ASCII art viewers"
 license = "MIT"
@@ -12,12 +12,12 @@ categories = ["multimedia", "rendering"]
 default = []
 # Enable web/WASM canvas rendering support
 web = ["dep:web-sys", "dep:wasm-bindgen", "dep:js-sys", "dep:wasm-bindgen-futures"]
-# Enable serde serialization for data structures
 serde = ["dep:serde"]
+toml = ["serde", "dep:toml"]
 
 [dependencies]
-# Optional: serialization support
 serde = { version = "1.0", features = ["derive"], optional = true }
+toml = { version = "0.8", optional = true }
 
 # Optional: web/WASM support for canvas rendering
 wasm-bindgen = { version = "0.2", optional = true }
