@@ -42,20 +42,20 @@ fn parse_hex(s: &str) -> Option<(u8, u8, u8)> {
 
 fn parse_named(s: &str) -> Option<(u8, u8, u8)> {
     match s.to_lowercase().as_str() {
-        "black" => Some((0, 0, 0)),
-        "white" => Some((255, 255, 255)),
-        "red" => Some((255, 0, 0)),
-        "green" => Some((0, 128, 0)),
-        "blue" => Some((0, 0, 255)),
-        "yellow" => Some((255, 255, 0)),
-        "cyan" => Some((0, 255, 255)),
-        "magenta" => Some((255, 0, 255)),
+        "black"         => Some((0, 0, 0)),
+        "white"         => Some((255, 255, 255)),
+        "red"           => Some((255, 0, 0)),
+        "green"         => Some((0, 128, 0)),
+        "blue"          => Some((0, 0, 255)),
+        "yellow"        => Some((255, 255, 0)),
+        "cyan"          => Some((0, 255, 255)),
+        "magenta"       => Some((255, 0, 255)),
         "gray" | "grey" => Some((128, 128, 128)),
-        "orange" => Some((255, 165, 0)),
-        "purple" => Some((128, 0, 128)),
-        "pink" => Some((255, 192, 203)),
-        "brown" => Some((139, 69, 19)),
-        _ => None,
+        "orange"        => Some((255, 165, 0)),
+        "purple"        => Some((128, 0, 128)),
+        "pink"          => Some((255, 192, 203)),
+        "brown"         => Some((139, 69, 19)),
+        _               => None,
     }
 }
 
@@ -88,27 +88,27 @@ mod tests {
 
     #[test]
     fn named_colors() {
-        assert_eq!(parse_color("black"), Some((0, 0, 0)));
-        assert_eq!(parse_color("white"), Some((255, 255, 255)));
-        assert_eq!(parse_color("red"), Some((255, 0, 0)));
-        assert_eq!(parse_color("green"), Some((0, 128, 0)));
-        assert_eq!(parse_color("blue"), Some((0, 0, 255)));
-        assert_eq!(parse_color("yellow"), Some((255, 255, 0)));
-        assert_eq!(parse_color("cyan"), Some((0, 255, 255)));
-        assert_eq!(parse_color("magenta"), Some((255, 0, 255)));
-        assert_eq!(parse_color("gray"), Some((128, 128, 128)));
-        assert_eq!(parse_color("grey"), Some((128, 128, 128)));
-        assert_eq!(parse_color("orange"), Some((255, 165, 0)));
-        assert_eq!(parse_color("purple"), Some((128, 0, 128)));
-        assert_eq!(parse_color("pink"), Some((255, 192, 203)));
-        assert_eq!(parse_color("brown"), Some((139, 69, 19)));
+        assert_eq!(parse_color("black"),    Some((0, 0, 0)));
+        assert_eq!(parse_color("white"),    Some((255, 255, 255)));
+        assert_eq!(parse_color("red"),      Some((255, 0, 0)));
+        assert_eq!(parse_color("green"),    Some((0, 128, 0)));
+        assert_eq!(parse_color("blue"),     Some((0, 0, 255)));
+        assert_eq!(parse_color("yellow"),   Some((255, 255, 0)));
+        assert_eq!(parse_color("cyan"),     Some((0, 255, 255)));
+        assert_eq!(parse_color("magenta"),  Some((255, 0, 255)));
+        assert_eq!(parse_color("gray"),     Some((128, 128, 128)));
+        assert_eq!(parse_color("grey"),     Some((128, 128, 128)));
+        assert_eq!(parse_color("orange"),   Some((255, 165, 0)));
+        assert_eq!(parse_color("purple"),   Some((128, 0, 128)));
+        assert_eq!(parse_color("pink"),     Some((255, 192, 203)));
+        assert_eq!(parse_color("brown"),    Some((139, 69, 19)));
     }
 
     #[test]
     fn named_colors_case_insensitive() {
-        assert_eq!(parse_color("Black"), Some((0, 0, 0)));
-        assert_eq!(parse_color("WHITE"), Some((255, 255, 255)));
-        assert_eq!(parse_color("Red"), Some((255, 0, 0)));
+        assert_eq!(parse_color("Black"),    Some((0, 0, 0)));
+        assert_eq!(parse_color("WHITE"),    Some((255, 255, 255)));
+        assert_eq!(parse_color("Red"),      Some((255, 0, 0)));
     }
 
     #[test]
@@ -140,12 +140,12 @@ mod tests {
 
     #[test]
     fn invalid_colors() {
-        assert_eq!(parse_color(""), None);
-        assert_eq!(parse_color("notacolor"), None);
-        assert_eq!(parse_color("#"), None);
-        assert_eq!(parse_color("#zz"), None);
-        assert_eq!(parse_color("#12345"), None);
-        assert_eq!(parse_color("#1234567"), None);
+        assert_eq!(parse_color(""),             None);
+        assert_eq!(parse_color("notacolor"),    None);
+        assert_eq!(parse_color("#"),            None);
+        assert_eq!(parse_color("#zz"),          None);
+        assert_eq!(parse_color("#12345"),       None);
+        assert_eq!(parse_color("#1234567"),     None);
     }
 
     #[test]
