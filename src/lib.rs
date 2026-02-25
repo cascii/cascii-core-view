@@ -42,6 +42,7 @@ mod data;
 mod details;
 mod loader;
 mod parser;
+pub mod player;
 pub mod render;
 mod sizing;
 
@@ -53,10 +54,11 @@ pub use loader::{load_color_frames, load_text_frames, FrameDataProvider, FrameLo
 pub use parser::{parse_cframe, parse_cframe_text, ParseError};
 pub use render::{RenderConfig, RenderResult};
 pub use sizing::FontSizing;
+pub use player::FramePlayer;
 
 #[cfg(feature = "web")]
 pub use render::web::render_to_canvas;
 #[cfg(feature = "web")]
 pub use loader::yield_to_event_loop;
 #[cfg(feature = "web")]
-pub use render::web::{draw_cached_canvas, draw_frame_from_cache, render_to_offscreen_canvas, FrameCanvasCache};
+pub use render::web::{draw_cached_canvas, draw_frame_from_cache, render_to_offscreen_canvas, render_text_to_canvas, FrameCanvasCache};
