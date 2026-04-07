@@ -55,12 +55,7 @@ pub struct CFrameData {
 impl CFrameData {
     /// Create a new CFrameData with the given dimensions and data.
     pub fn new(width: u32, height: u32, chars: Vec<u8>, rgb: Vec<u8>) -> Self {
-        Self {
-            width,
-            height,
-            chars,
-            rgb,
-        }
+        Self {width, height, chars, rgb}
     }
 
     /// Get the character at the given position.

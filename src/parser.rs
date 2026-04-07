@@ -17,18 +17,10 @@ impl std::fmt::Display for ParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ParseError::FileTooSmall { expected, actual } => {
-                write!(
-                    f,
-                    "File too small: expected at least {} bytes, got {}",
-                    expected, actual
-                )
+                write!(f, "File too small: expected at least {} bytes, got {}", expected, actual)
             }
             ParseError::SizeMismatch { expected, actual } => {
-                write!(
-                    f,
-                    "File size mismatch: expected {} bytes, got {}",
-                    expected, actual
-                )
+                write!(f, "File size mismatch: expected {} bytes, got {}", expected, actual)
             }
             ParseError::InvalidDimensions { width, height } => {
                 write!(f, "Invalid dimensions: {}x{}", width, height)
@@ -76,10 +68,7 @@ pub fn parse_cframe(data: &[u8]) -> Result<CFrameData, ParseError> {
     const HEADER_SIZE: usize = 8;
 
     if data.len() < HEADER_SIZE {
-        return Err(ParseError::FileTooSmall {
-            expected: HEADER_SIZE,
-            actual: data.len(),
-        });
+        return Err(ParseError::FileTooSmall {expected: HEADER_SIZE, actual: data.len()});
     }
 
     let width = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
@@ -93,10 +82,7 @@ pub fn parse_cframe(data: &[u8]) -> Result<CFrameData, ParseError> {
     let expected_size = HEADER_SIZE + pixel_count * 4;
 
     if data.len() < expected_size {
-        return Err(ParseError::SizeMismatch {
-            expected: expected_size,
-            actual: data.len(),
-        });
+        return Err(ParseError::SizeMismatch {expected: expected_size, actual: data.len()});
     }
 
     let mut chars = Vec::with_capacity(pixel_count);
@@ -110,12 +96,7 @@ pub fn parse_cframe(data: &[u8]) -> Result<CFrameData, ParseError> {
         rgb.push(data[offset + 3]); // b
     }
 
-    Ok(CFrameData {
-        width,
-        height,
-        chars,
-        rgb,
-    })
+    Ok(CFrameData {width, height, chars, rgb})
 }
 
 /// Extract plain text from a .cframe file.
@@ -144,30 +125,21 @@ pub fn parse_cframe_text(data: &[u8]) -> Result<String, ParseError> {
     const HEADER_SIZE: usize = 8;
 
     if data.len() < HEADER_SIZE {
-        return Err(ParseError::FileTooSmall {
-            expected: HEADER_SIZE,
-            actual: data.len(),
-        });
+        return Err(ParseError::FileTooSmall {expected: HEADER_SIZE, actual: data.len()});
     }
 
     let width = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
     let height = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
 
     if width == 0 || height == 0 {
-        return Err(ParseError::InvalidDimensions {
-            width: width as u32,
-            height: height as u32,
-        });
+        return Err(ParseError::InvalidDimensions {width: width as u32, height: height as u32});
     }
 
     let pixel_count = width * height;
     let expected_size = HEADER_SIZE + pixel_count * 4;
 
     if data.len() < expected_size {
-        return Err(ParseError::SizeMismatch {
-            expected: expected_size,
-            actual: data.len(),
-        });
+        return Err(ParseError::SizeMismatch {expected: expected_size, actual: data.len()});
     }
 
     let mut text = String::with_capacity(pixel_count + height);

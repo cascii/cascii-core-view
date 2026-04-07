@@ -76,13 +76,7 @@ impl FontSizing {
     /// ## Returns
     ///
     /// The optimal font size in pixels.
-    pub fn calculate_font_size(
-        &self,
-        cols: usize,
-        rows: usize,
-        container_width: f64,
-        container_height: f64,
-    ) -> f64 {
+    pub fn calculate_font_size(&self, cols: usize, rows: usize, container_width: f64, container_height: f64) -> f64 {
         if cols == 0 || rows == 0 {
             return self.min_font_size;
         }
@@ -104,9 +98,7 @@ impl FontSizing {
         let optimal_font_size = max_font_from_width.min(max_font_from_height);
 
         // Clamp to valid range
-        optimal_font_size
-            .max(self.min_font_size)
-            .min(self.max_font_size)
+        optimal_font_size.max(self.min_font_size).min(self.max_font_size)
     }
 
     /// Calculate the character width in pixels for a given font size.
