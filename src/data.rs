@@ -107,6 +107,95 @@ impl CFrameData {
     pub fn pixel_count(&self) -> usize {
         self.width as usize * self.height as usize
     }
+
+    /// Reconstruct the plain text representation of this frame.
+    pub fn to_text(&self) -> String {
+        let width = self.width as usize;
+        let height = self.height as usize;
+        let mut text = String::with_capacity(self.pixel_count() + height);
+
+        for row in 0..height {
+            let start = row * width;
+            let end = start + width;
+            for &ch in &self.chars[start..end] {
+                text.push(ch as char);
+            }
+            text.push('\n');
+        }
+
+        text
+    }
+}
+
+/// Packed multi-frame color data for efficient transport / storage.
+///
+/// The layout is one shared header followed by tightly packed frames,
+/// where each pixel is stored as `(char, r, g, b)`.
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct PackedCFrameBlob {
+    /// Number of frames contained in the blob
+    pub frame_count: u32,
+    /// Frame width in characters
+    pub width: u32,
+    /// Frame height in characters
+    pub height: u32,
+    /// Raw packed frame bytes without the blob header
+    pub frames: Vec<u8>,
+}
+
+impl PackedCFrameBlob {
+    /// Create a new packed blob from validated raw frame bytes.
+    pub fn new(frame_count: u32, width: u32, height: u32, frames: Vec<u8>) -> Self {
+        Self {frame_count, width, height, frames}
+    }
+
+    /// Number of frames in the blob.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.frame_count as usize
+    }
+
+    /// Returns `true` when the blob contains no frames.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.frame_count == 0
+    }
+
+    /// Byte length of one packed frame.
+    #[inline]
+    pub fn frame_byte_len(&self) -> usize {
+        self.width as usize * self.height as usize * 4
+    }
+
+    /// Return the raw packed bytes for one frame.
+    pub fn frame_bytes(&self, index: usize) -> Option<&[u8]> {
+        if index >= self.len() {
+            return None;
+        }
+
+        let frame_len = self.frame_byte_len();
+        let start = index * frame_len;
+        let end = start + frame_len;
+        self.frames.get(start..end)
+    }
+
+    /// Decode one frame from the packed blob.
+    pub fn decode_frame(&self, index: usize) -> Option<CFrameData> {
+        let bytes = self.frame_bytes(index)?;
+        let pixel_count = self.width as usize * self.height as usize;
+        let mut chars = Vec::with_capacity(pixel_count);
+        let mut rgb = Vec::with_capacity(pixel_count * 3);
+
+        for chunk in bytes.chunks_exact(4) {
+            chars.push(chunk[0]);
+            rgb.push(chunk[1]);
+            rgb.push(chunk[2]);
+            rgb.push(chunk[3]);
+        }
+
+        Some(CFrameData::new(self.width, self.height, chars, rgb))
+    }
 }
 
 /// A loaded frame containing text content and optional color data.
@@ -188,5 +277,25 @@ mod tests {
 
         let frame2 = Frame::text_only("ABCD\nEF".to_string());
         assert_eq!(frame2.dimensions(), (4, 2));
+    }
+
+    #[test]
+    fn test_cframe_to_text() {
+        let cframe = CFrameData {width: 2, height: 2, chars: vec![b'A', b'B', b'C', b'D'], rgb: vec![255, 0, 0, 0, 255, 0, 0, 0, 255, 128, 128, 128]};
+        assert_eq!(cframe.to_text(), "AB\nCD\n");
+    }
+
+    #[test]
+    fn test_packed_blob_decode_frame() {
+        let blob = PackedCFrameBlob::new(2, 2, 1, vec![b'A', 255, 0, 0, b'B', 0, 255, 0, b'C', 0, 0, 255, b'D', 255, 255, 255]);
+
+        let first = blob.decode_frame(0).unwrap();
+        assert_eq!(first.chars, vec![b'A', b'B']);
+        assert_eq!(first.rgb, vec![255, 0, 0, 0, 255, 0]);
+
+        let second = blob.decode_frame(1).unwrap();
+        assert_eq!(second.chars, vec![b'C', b'D']);
+        assert_eq!(second.rgb, vec![0, 0, 255, 255, 255, 255]);
+        assert!(blob.decode_frame(2).is_none());
     }
 }
