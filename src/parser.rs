@@ -187,10 +187,7 @@ pub fn parse_packed_cframes(data: &[u8]) -> Result<PackedCFrameBlob, ParseError>
     const HEADER_SIZE: usize = 12;
 
     if data.len() < HEADER_SIZE {
-        return Err(ParseError::FileTooSmall {
-            expected: HEADER_SIZE,
-            actual: data.len(),
-        });
+        return Err(ParseError::FileTooSmall {expected: HEADER_SIZE, actual: data.len()});
     }
 
     let frame_count = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
@@ -209,18 +206,10 @@ pub fn parse_packed_cframes(data: &[u8]) -> Result<PackedCFrameBlob, ParseError>
     let expected_size = HEADER_SIZE + frame_count as usize * frame_size;
 
     if data.len() < expected_size {
-        return Err(ParseError::SizeMismatch {
-            expected: expected_size,
-            actual: data.len(),
-        });
+        return Err(ParseError::SizeMismatch {expected: expected_size, actual: data.len()});
     }
 
-    Ok(PackedCFrameBlob::new(
-        frame_count,
-        width,
-        height,
-        data[HEADER_SIZE..expected_size].to_vec(),
-    ))
+    Ok(PackedCFrameBlob::new(frame_count, width, height, data[HEADER_SIZE..expected_size].to_vec()))
 }
 
 #[cfg(test)]

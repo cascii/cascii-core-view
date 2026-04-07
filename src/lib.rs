@@ -4,22 +4,24 @@
 //!
 //! This crate provides platform-agnostic data structures and logic for:
 //! - Loading and parsing ASCII frame data (text and color)
+//! - Parsing packed multi-frame color blobs for whole animations
 //! - Calculating optimal font sizes for display
 //! - Controlling animation playback (speed, loop, stepping)
 //! - Rendering frames to canvas (with optional web support)
+//! - High-level playback through [`FramePlayer`]
 //!
 //! ## Features
 //!
 //! - `serde` - Enable serialization/deserialization for data structures
 //! - `web` - Enable web/WASM canvas rendering support
 //!
-//! ## Example
+//! ## Examples
 //!
 //! ```rust,ignore
-//! use cascii_core_view::{Frame, CFrameData, AnimationController, FontSizing};
+//! use cascii_core_view::{AnimationController, FontSizing, Frame};
 //!
 //! // Parse a .cframe file
-//! let cframe_data = cascii_core_view::parser::parse_cframe(&bytes)?;
+//! let cframe_data = cascii_core_view::parse_cframe(&bytes)?;
 //!
 //! // Create a frame
 //! let frame = Frame {
@@ -34,6 +36,24 @@
 //! let mut controller = AnimationController::new(24); // 24 FPS
 //! controller.set_frame_count(100);
 //! controller.play();
+//! ```
+//!
+//! ```rust,ignore
+//! use cascii_core_view::{FontSizing, FramePlayer, RenderConfig};
+//!
+//! let mut player = FramePlayer::new(30);
+//! player.set_text_frames(text_frames);
+//! player.load_packed_colors(&packed_color_blob)?;
+//!
+//! let mut config = RenderConfig::new(12.0);
+//! config.font_family = "Menlo, Monaco, 'Cascadia Mono', Consolas, monospace".into();
+//! config.background_color = Some((0, 0, 0));
+//! config.sizing = FontSizing {
+//!     line_height_ratio: 14.0 / 12.0,
+//!     ..FontSizing::default()
+//! };
+//! player.set_render_config(config);
+//! player.play();
 //! ```
 
 mod animation;
