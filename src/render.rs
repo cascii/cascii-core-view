@@ -310,8 +310,7 @@ pub mod web {
         }
     }
 
-    fn layout_canvas(
-        canvas: &HtmlCanvasElement, cols: usize, rows: usize, config: &RenderConfig) -> Result<(CanvasRenderingContext2d, CanvasLayout), String> {
+    fn layout_canvas(canvas: &HtmlCanvasElement, cols: usize, rows: usize, config: &RenderConfig) -> Result<(CanvasRenderingContext2d, CanvasLayout), String> {
         let dpr = current_device_pixel_ratio();
         let char_width = measure_char_width(canvas, config)?;
         let line_height = config.line_height();

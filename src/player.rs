@@ -289,10 +289,7 @@ impl FramePlayer {
             let fs = self.config.font_size;
             let lh = self.config.line_height();
             let (w, h) = self.sizing.canvas_dimensions(cols, rows, fs);
-            format!(
-                "font-size: {:.2}px; line-height: {:.2}px; width: {:.2}px; height: {:.2}px;",
-                fs, lh, w, h
-            )
+            format!("font-size: {:.2}px; line-height: {:.2}px; width: {:.2}px; height: {:.2}px;", fs, lh, w, h)
         } else {
             String::new()
         }
@@ -333,11 +330,7 @@ impl FramePlayer {
     ///
     /// Returns `Ok(true)` if a colour frame was drawn, `Ok(false)` if the
     /// consumer should use the text fallback.
-    pub fn render_frame(
-        &mut self,
-        index: usize,
-        canvas: &web_sys::HtmlCanvasElement,
-    ) -> Result<bool, String> {
+    pub fn render_frame(&mut self, index: usize, canvas: &web_sys::HtmlCanvasElement) -> Result<bool, String> {
         if !self.color_ready {
             return Ok(false);
         }
@@ -415,23 +408,14 @@ impl FramePlayer {
     /// [`set_color_ready(true)`](Self::set_color_ready) to start
     /// immediately (first loop will be slower while frames are cached
     /// on demand).
-    pub async fn load_colors<P: FrameDataProvider>(
-        player: &std::rc::Rc<std::cell::RefCell<Self>>,
-        provider: &P,
-    ) -> LoadResult<()> {
+    pub async fn load_colors<P: FrameDataProvider>(player: &std::rc::Rc<std::cell::RefCell<Self>>, provider: &P) -> LoadResult<()> {
         let frame_files = player.borrow().frame_files().to_vec();
         let player_cb = player.clone();
-        crate::load_color_frames(
-            provider,
-            &frame_files,
-            |index, _total, cframe_opt| {
-                if let Some(cframe) = cframe_opt {
-                    player_cb.borrow_mut().set_frame_color(index, cframe);
-                }
-            },
-            crate::yield_to_event_loop,
-        )
-        .await
+        crate::load_color_frames(provider, &frame_files, |index, _total, cframe_opt| {
+            if let Some(cframe) = cframe_opt {
+                player_cb.borrow_mut().set_frame_color(index, cframe);
+            }
+        }, crate::yield_to_event_loop).await
     }
 
     /// Pre-render all colour frames to the canvas cache, then enable
@@ -440,9 +424,7 @@ impl FramePlayer {
     /// Call this after [`load_colors`](Self::load_colors) for smooth
     /// playback from the very first coloured loop.  Yields between
     /// frames so the text animation keeps running while caching.
-    pub async fn pre_cache_all(
-        player: &std::rc::Rc<std::cell::RefCell<Self>>,
-    ) -> Result<(), String> {
+    pub async fn pre_cache_all(player: &std::rc::Rc<std::cell::RefCell<Self>>) -> Result<(), String> {
         let count = player.borrow().frame_count();
         for i in 0..count {
             player.borrow_mut().pre_cache_frame(i);
