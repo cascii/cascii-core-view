@@ -48,17 +48,17 @@ mod sizing;
 
 pub use animation::{AnimationController, AnimationState, LoopMode};
 pub use color::{parse_color, FrameColors};
-pub use data::{CFrameData, Frame, FrameFile};
+pub use data::{CFrameData, Frame, FrameFile, PackedCFrameBlob};
 pub use details::ProjectDetails;
 pub use loader::{load_color_frames, load_text_frames, FrameDataProvider, FrameLoaderState, LoadResult, LoadingPhase, LoadingProgress};
-pub use parser::{parse_cframe, parse_cframe_text, ParseError};
+pub use parser::{parse_cframe, parse_cframe_text, parse_packed_cframes, ParseError};
+pub use player::FramePlayer;
 pub use render::{RenderConfig, RenderResult};
 pub use sizing::FontSizing;
-pub use player::FramePlayer;
 
-#[cfg(feature = "web")]
-pub use render::web::render_to_canvas;
 #[cfg(feature = "web")]
 pub use loader::yield_to_event_loop;
 #[cfg(feature = "web")]
-pub use render::web::{draw_cached_canvas, draw_frame_from_cache, render_to_offscreen_canvas, render_text_to_canvas, FrameCanvasCache};
+pub use render::web::render_to_canvas;
+#[cfg(feature = "web")]
+pub use render::web::{draw_cached_canvas, draw_frame_from_cache, render_text_to_canvas, render_to_offscreen_canvas, FrameCanvasCache};

@@ -4,11 +4,12 @@ Core library for displaying and animating CASCII (Colored ASCII) frames.
 
 This crate provides platform-agnostic data structures and logic for:
 
-- **Data structures** - `Frame`, `CFrameData`, `FrameFile` for representing ASCII art frames with optional color
-- **Binary parsing** - Parse `.cframe` binary files containing colored ASCII data
+- **Data structures** - `Frame`, `CFrameData`, `PackedCFrameBlob`, `FrameFile`
+- **Binary parsing** - Parse single-frame `.cframe` files and packed multi-frame blobs
 - **Font sizing** - Calculate optimal font sizes to fit content in containers
 - **Animation control** - Platform-agnostic animation controller with speed, loop, range, and stepping
-- **Rendering** - Generate optimized draw commands for any rendering backend
+- **High-level playback** - `FramePlayer` for in-memory text frames, packed blobs, and rendering
+- **Rendering** - Generate optimized draw commands for any rendering backend, with DPI-aware web canvas support
 
 ## Features
 
@@ -19,10 +20,10 @@ This crate provides platform-agnostic data structures and logic for:
 
 ```toml
 [dependencies]
-cascii-core-view = "0.1"
+cascii-core-view = "0.3.0"
 
 # With features
-cascii-core-view = { version = "0.1", features = ["serde", "web"] }
+cascii-core-view = { version = "0.3.0", features = ["serde", "web"] }
 ```
 
 ## Usage
@@ -41,6 +42,51 @@ let text = parse_cframe_text(&bytes)?;
 
 // Create a Frame combining text and color
 let frame = Frame::with_color(text, cframe);
+```
+
+### Parsing Packed Animation Blobs
+
+```rust
+use cascii_core_view::parse_packed_cframes;
+
+let bytes = std::fs::read("animation.bin")?;
+let blob = parse_packed_cframes(&bytes)?;
+
+assert_eq!(blob.len(), 120);
+assert_eq!(blob.width, 80);
+assert_eq!(blob.height, 24);
+
+let first_frame = blob.decode_frame(0).unwrap();
+let first_text = first_frame.to_text();
+```
+
+The packed format is useful when you want to ship one color blob for a whole
+animation instead of loading one `.cframe` file per frame.
+
+### FramePlayer With In-Memory Text + Packed Colors
+
+```rust
+use cascii_core_view::{FontSizing, FramePlayer, RenderConfig};
+
+let text_frames = vec![
+    "Frame 1\n".to_string(),
+    "Frame 2\n".to_string(),
+];
+let packed_bytes = std::fs::read("animation.bin")?;
+
+let mut player = FramePlayer::new(30);
+player.set_text_frames(text_frames);
+player.load_packed_colors(&packed_bytes)?;
+
+let mut config = RenderConfig::new(12.0);
+config.font_family = "Menlo, Monaco, 'Cascadia Mono', Consolas, monospace".into();
+config.background_color = Some((0, 0, 0));
+config.sizing = FontSizing {
+    line_height_ratio: 14.0 / 12.0,
+    ..FontSizing::default()
+};
+player.set_render_config(config);
+player.play();
 ```
 
 ### Font Sizing
@@ -104,7 +150,9 @@ controller.set_loop_mode(LoopMode::Once);
 use cascii_core_view::{CFrameData, RenderConfig};
 use cascii_core_view::render::render_cframe;
 
-let config = RenderConfig::new(12.0); // 12px font
+let mut config = RenderConfig::new(12.0); // 12px font
+config.font_family = "Menlo, monospace".into();
+config.background_color = Some((0, 0, 0));
 let result = render_cframe(&cframe, &config);
 
 // result.batches contains optimized draw commands
@@ -123,14 +171,21 @@ use cascii_core_view::render::web::render_to_canvas;
 use web_sys::HtmlCanvasElement;
 
 let canvas: HtmlCanvasElement = // ... get from DOM
-let config = RenderConfig::new(12.0);
+let mut config = RenderConfig::new(12.0);
+config.font_family = "Menlo, Monaco, 'Cascadia Mono', Consolas, monospace".into();
+config.background_color = Some((0, 0, 0));
 
 render_to_canvas(&cframe, &canvas, &config)?;
 ```
 
-## .cframe Binary Format
+The web renderer measures actual glyph width, sizes the backing store for the
+current device pixel ratio, and keeps the CSS size in logical pixels.
 
-The `.cframe` format stores colored ASCII art:
+## Binary Formats
+
+### Single-Frame `.cframe`
+
+The `.cframe` format stores one colored ASCII frame:
 
 ```
 Bytes 0-3:  width (u32 little-endian)
@@ -144,27 +199,46 @@ Bytes 8+:   For each pixel (width × height):
 Total size: 8 + (width × height × 4) bytes
 ```
 
+### Packed Multi-Frame Blob
+
+The packed animation format stores one shared header followed by `frame_count`
+frames in the same `(char, r, g, b)` pixel layout:
+
+```
+Bytes 0-3:   frame count (u32 little-endian)
+Bytes 4-7:   width (u32 little-endian)
+Bytes 8-11:  height (u32 little-endian)
+Bytes 12+:   frame_count frames, each with:
+               - 1 byte: ASCII character
+               - 1 byte: Red
+               - 1 byte: Green
+               - 1 byte: Blue
+
+Total size: 12 + (frame_count × width × height × 4) bytes
+```
+
 ## Integration Examples
 
 ### Tauri/Yew Application
 
 ```rust
-// In your Yew component, use AnimationController for state
-let controller = use_mut_ref(|| AnimationController::new(24));
+use cascii_core_view::{FramePlayer, RenderConfig};
 
-// Load frames and set count
-controller.borrow_mut().set_frame_count(frames.len());
-
-// Use gloo_timers::Interval for animation
-use_effect_with(is_playing, move |playing| {
-    if *playing {
-        let interval = Interval::new(controller.borrow().interval_ms(), move || {
-            controller.borrow_mut().tick();
-            // Update your frame display
-        });
-        // Store interval handle...
-    }
+let player = use_mut_ref(|| {
+    let mut player = FramePlayer::new(30);
+    let mut config = RenderConfig::new(12.0);
+    config.font_family = "Menlo, monospace".into();
+    player.set_render_config(config);
+    player
 });
+
+// After fetching assets:
+player.borrow_mut().set_text_frames(text_frames);
+player.borrow_mut().load_packed_colors(&packed_bytes)?;
+
+// In your timer callback:
+player.borrow_mut().tick();
+let current_text = player.borrow().current_text();
 ```
 
 ### Web Page Embed

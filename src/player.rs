@@ -7,10 +7,8 @@
 //! framework's timer / template glue.
 
 use crate::{
-    AnimationController, CFrameData, Frame, FrameFile,
-    FontSizing, FrameDataProvider, LoadResult,
-    load_text_frames,
-    render::RenderConfig,
+    load_text_frames, render::RenderConfig, AnimationController, CFrameData, FontSizing, Frame,
+    FrameDataProvider, FrameFile, LoadResult, ParseError,
 };
 
 /// A high-level frame player that bundles frame data, animation control,
@@ -55,9 +53,65 @@ impl FramePlayer {
         let (frames, frame_files) = load_text_frames(provider, directory).await?;
         self.controller.set_frame_count(frames.len());
         #[cfg(feature = "web")]
-        self.cache.resize(frames.len());
+        {
+            self.cache.resize(frames.len());
+            self.cache.invalidate_all();
+        }
         self.frames = frames;
         self.frame_files = frame_files;
+        self.color_ready = false;
+        Ok(())
+    }
+
+    /// Replace the current contents with in-memory text frames.
+    ///
+    /// Useful when the caller already fetched / generated all frame text.
+    pub fn set_text_frames(&mut self, contents: Vec<String>) {
+        self.frames = contents.into_iter().map(Frame::text_only).collect();
+        self.frame_files.clear();
+        self.color_ready = false;
+        self.controller.reset();
+        self.controller.set_frame_count(self.frames.len());
+        #[cfg(feature = "web")]
+        {
+            self.cache.resize(self.frames.len());
+            self.cache.invalidate_all();
+        }
+    }
+
+    /// Load colour data from one packed multi-frame blob.
+    ///
+    /// If no text frames are loaded yet, text content is reconstructed from
+    /// the blob so playback still works.
+    pub fn load_packed_colors(&mut self, data: &[u8]) -> Result<(), ParseError> {
+        let blob = crate::parse_packed_cframes(data)?;
+        let frame_count = blob.len();
+
+        if self.frames.is_empty() {
+            self.frames = (0..frame_count)
+                .map(|index| {
+                    let cframe = blob.decode_frame(index).expect("packed blob frame index should be valid");
+                    let text = cframe.to_text();
+                    Frame::with_color(text, cframe)
+                })
+                .collect();
+            self.frame_files.clear();
+            self.controller.reset();
+            self.controller.set_frame_count(self.frames.len());
+            #[cfg(feature = "web")]
+            self.cache.resize(self.frames.len());
+        } else if self.frames.len() != frame_count {
+            return Err(ParseError::FrameCountMismatch {expected: self.frames.len(), actual: frame_count});
+        } else {
+            for index in 0..frame_count {
+                let cframe = blob.decode_frame(index).expect("packed blob frame index should be valid");
+                self.frames[index].cframe = Some(cframe);
+            }
+        }
+
+        self.color_ready = true;
+        #[cfg(feature = "web")]
+        self.cache.invalidate_all();
         Ok(())
     }
 
@@ -166,7 +220,9 @@ impl FramePlayer {
 
     /// Text content of the current frame.
     pub fn current_text(&self) -> Option<&str> {
-        self.frames.get(self.controller.current_frame()).map(|f| f.content.as_str())
+        self.frames
+            .get(self.controller.current_frame())
+            .map(|f| f.content.as_str())
     }
 
     /// Text content of an arbitrary frame.
@@ -176,7 +232,10 @@ impl FramePlayer {
 
     /// Whether a specific frame has colour data.
     pub fn has_color_at(&self, index: usize) -> bool {
-        self.frames.get(index).map(|f| f.has_color()).unwrap_or(false)
+        self.frames
+            .get(index)
+            .map(|f| f.has_color())
+            .unwrap_or(false)
     }
 
     /// Whether any loaded frame has colour data.
@@ -199,16 +258,21 @@ impl FramePlayer {
             self.config.font_size = font_size;
             self.config.sizing = self.sizing.clone();
             #[cfg(feature = "web")]
-            {
-                let key = (font_size * 100.0) as i32;
-                self.cache.invalidate_for_font_size_key(key);
-            }
+            self.cache.invalidate_all();
         }
     }
 
     /// Current font size in pixels.
     pub fn font_size(&self) -> f64 {
         self.config.font_size
+    }
+
+    /// Replace the render configuration.
+    pub fn set_render_config(&mut self, config: RenderConfig) {
+        self.sizing = config.sizing.clone();
+        self.config = config;
+        #[cfg(feature = "web")]
+        self.cache.invalidate_all();
     }
 
     /// Borrow the current render config.
@@ -225,7 +289,10 @@ impl FramePlayer {
             let fs = self.config.font_size;
             let lh = self.config.line_height();
             let (w, h) = self.sizing.canvas_dimensions(cols, rows, fs);
-            format!("font-size: {:.2}px; line-height: {:.2}px; width: {:.2}px; height: {:.2}px;", fs, lh, w, h)
+            format!(
+                "font-size: {:.2}px; line-height: {:.2}px; width: {:.2}px; height: {:.2}px;",
+                fs, lh, w, h
+            )
         } else {
             String::new()
         }
@@ -266,10 +333,17 @@ impl FramePlayer {
     ///
     /// Returns `Ok(true)` if a colour frame was drawn, `Ok(false)` if the
     /// consumer should use the text fallback.
-    pub fn render_frame(&mut self, index: usize, canvas: &web_sys::HtmlCanvasElement) -> Result<bool, String> {
+    pub fn render_frame(
+        &mut self,
+        index: usize,
+        canvas: &web_sys::HtmlCanvasElement,
+    ) -> Result<bool, String> {
         if !self.color_ready {
             return Ok(false);
         }
+
+        let render_key = crate::render::web::current_render_key(&self.config);
+        self.cache.invalidate_for_render_key(render_key);
 
         // Try cache first
         if crate::render::web::draw_frame_from_cache(canvas, &self.cache, index)? {
@@ -292,6 +366,9 @@ impl FramePlayer {
     /// Pre-render one frame to the cache. Returns `true` if the frame was
     /// successfully cached (i.e. it has colour data and wasn't cached yet).
     pub fn pre_cache_frame(&mut self, index: usize) -> bool {
+        let render_key = crate::render::web::current_render_key(&self.config);
+        self.cache.invalidate_for_render_key(render_key);
+
         if self.cache.has(index) {
             return false;
         }
@@ -338,15 +415,21 @@ impl FramePlayer {
     /// [`set_color_ready(true)`](Self::set_color_ready) to start
     /// immediately (first loop will be slower while frames are cached
     /// on demand).
-    pub async fn load_colors<P: FrameDataProvider>(player: &std::rc::Rc<std::cell::RefCell<Self>>, provider: &P) -> LoadResult<()> {
+    pub async fn load_colors<P: FrameDataProvider>(
+        player: &std::rc::Rc<std::cell::RefCell<Self>>,
+        provider: &P,
+    ) -> LoadResult<()> {
         let frame_files = player.borrow().frame_files().to_vec();
         let player_cb = player.clone();
-        crate::load_color_frames(provider, &frame_files, |index, _total, cframe_opt| {
+        crate::load_color_frames(
+            provider,
+            &frame_files,
+            |index, _total, cframe_opt| {
                 if let Some(cframe) = cframe_opt {
                     player_cb.borrow_mut().set_frame_color(index, cframe);
                 }
             },
-            crate::yield_to_event_loop
+            crate::yield_to_event_loop,
         )
         .await
     }
@@ -357,7 +440,9 @@ impl FramePlayer {
     /// Call this after [`load_colors`](Self::load_colors) for smooth
     /// playback from the very first coloured loop.  Yields between
     /// frames so the text animation keeps running while caching.
-    pub async fn pre_cache_all(player: &std::rc::Rc<std::cell::RefCell<Self>>) -> Result<(), String> {
+    pub async fn pre_cache_all(
+        player: &std::rc::Rc<std::cell::RefCell<Self>>,
+    ) -> Result<(), String> {
         let count = player.borrow().frame_count();
         for i in 0..count {
             player.borrow_mut().pre_cache_frame(i);
@@ -507,10 +592,7 @@ mod tests {
     #[test]
     fn test_player_toggle_stop() {
         let mut player = FramePlayer::new(24);
-        player.frames = vec![
-            Frame::text_only("A".into()),
-            Frame::text_only("B".into()),
-        ];
+        player.frames = vec![Frame::text_only("A".into()), Frame::text_only("B".into())];
         player.controller.set_frame_count(2);
 
         player.toggle();
