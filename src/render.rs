@@ -336,6 +336,49 @@ pub mod web {
             Ok(false)
         }
     }
+
+    /// Render plain text to a canvas element.
+    ///
+    /// This is used as a fallback when no colour frame data is available.
+    /// The text is drawn in white on a transparent background using the
+    /// monospace font at the size specified in `config`.
+    pub fn render_text_to_canvas(canvas: &HtmlCanvasElement, text: &str, config: &RenderConfig) -> Result<(), String> {
+        let lines: Vec<&str> = text.lines().collect();
+        let rows = lines.len();
+        let cols = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+
+        let char_width = config.char_width();
+        let line_height = config.line_height();
+        let canvas_width = cols as f64 * char_width;
+        let canvas_height = rows as f64 * line_height;
+
+        canvas.set_width(canvas_width.ceil() as u32);
+        canvas.set_height(canvas_height.ceil() as u32);
+
+        let ctx = canvas
+            .get_context("2d")
+            .map_err(|_| "Failed to get 2d context")?
+            .ok_or("No 2d context available")?
+            .dyn_into::<CanvasRenderingContext2d>()
+            .map_err(|_| "Failed to cast to CanvasRenderingContext2d")?;
+
+        ctx.clear_rect(0.0, 0.0, canvas_width, canvas_height);
+
+        let font_str = format!("{:.2}px monospace", config.font_size);
+        ctx.set_font(&font_str);
+        ctx.set_text_baseline("top");
+        ctx.set_fill_style_str("white");
+
+        for (row, line) in lines.iter().enumerate() {
+            if !line.is_empty() {
+                let y = row as f64 * line_height;
+                ctx.fill_text(line, 0.0, y)
+                    .map_err(|_| "Failed to fill text")?;
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
