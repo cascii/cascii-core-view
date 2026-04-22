@@ -101,6 +101,30 @@ impl FontSizing {
         optimal_font_size.max(self.min_font_size).min(self.max_font_size)
     }
 
+    /// Calculate a new font size from a measured rendered block size.
+    ///
+    /// This is useful when the actual rendered glyph metrics come from the
+    /// browser or host environment and should be preserved. The returned size
+    /// scales the content uniformly by font size only.
+    pub fn calculate_font_size_from_measured_size(&self, measured_width: f64, measured_height: f64, measured_font_size: f64, container_width: f64, container_height: f64) -> f64 {
+        if measured_width <= 0.0 || measured_height <= 0.0 || measured_font_size <= 0.0 {
+            return self.min_font_size;
+        }
+
+        let available_width = container_width - self.padding;
+        let available_height = container_height - self.padding;
+
+        if available_width <= 0.0 || available_height <= 0.0 {
+            return self.min_font_size;
+        }
+
+        let width_scale = available_width / measured_width;
+        let height_scale = available_height / measured_height;
+        let optimal_font_size = measured_font_size * width_scale.min(height_scale);
+
+        optimal_font_size.max(self.min_font_size).min(self.max_font_size)
+    }
+
     /// Calculate the character width in pixels for a given font size.
     #[inline]
     pub fn char_width(&self, font_size: f64) -> f64 {
@@ -174,6 +198,13 @@ mod tests {
         let (w, h) = sizing.canvas_dimensions(80, 24, 10.0);
         assert_eq!(w, 80.0 * 10.0 * 0.6); // 480
         assert_eq!(h, 24.0 * 10.0 * 1.11); // 266.4
+    }
+
+    #[test]
+    fn test_calculate_font_size_from_measured_size() {
+        let sizing = FontSizing::default();
+        let font_size = sizing.calculate_font_size_from_measured_size(480.0, 266.4, 10.0, 800.0, 600.0);
+        assert!(font_size > 15.0 && font_size < 17.0);
     }
 
     #[test]
