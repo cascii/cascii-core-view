@@ -37,7 +37,17 @@ impl FrameFile {
 
 /// Color frame data containing character and RGB information.
 ///
-/// This represents the parsed contents of a `.cframe` binary file.
+/// This represents the parsed contents of a `.cframe` binary file, optionally
+/// augmented with per-cell background colors.
+///
+/// ## Foreground vs background
+///
+/// - `rgb` is the **foreground** glyph color for every cell, always present
+///   when this struct exists.
+/// - `bg_rgb` is the **per-cell background** color (3 bytes per cell). It is
+///   `None` for frames produced by the current `.cframe` on-disk format. When
+///   present, renderers paint each cell rectangle in this color before
+///   compositing the glyph over it.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CFrameData {
@@ -47,15 +57,34 @@ pub struct CFrameData {
     pub height: u32,
     /// ASCII characters as bytes (width * height)
     pub chars: Vec<u8>,
-    /// RGB color data as flat array (width * height * 3)
+    /// Foreground RGB color data as flat array (width * height * 3)
     /// Layout: [r0, g0, b0, r1, g1, b1, ...]
     pub rgb: Vec<u8>,
+    /// Optional per-cell background RGB data as flat array (width * height * 3)
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub bg_rgb: Option<Vec<u8>>,
 }
 
 impl CFrameData {
-    /// Create a new CFrameData with the given dimensions and data.
+    /// Create a new CFrameData with foreground colors only.
+    ///
+    /// This is the historical constructor used by every `.cframe` reader that
+    /// predates per-cell backgrounds.
     pub fn new(width: u32, height: u32, chars: Vec<u8>, rgb: Vec<u8>) -> Self {
-        Self {width, height, chars, rgb}
+        Self {width, height, chars, rgb, bg_rgb: None}
+    }
+
+    /// Create a new CFrameData with both foreground and background colors.
+    ///
+    /// `bg_rgb` must be the same length as `rgb` (3 bytes per cell, row-major).
+    pub fn with_background(width: u32, height: u32, chars: Vec<u8>, rgb: Vec<u8>, bg_rgb: Vec<u8>) -> Self {
+        Self {width, height, chars, rgb, bg_rgb: Some(bg_rgb)}
+    }
+
+    /// Returns `true` when this frame carries per-cell background colors.
+    #[inline]
+    pub fn has_background(&self) -> bool {
+        self.bg_rgb.as_ref().map(|bg| bg.len() == self.chars.len() * 3).unwrap_or(false)
     }
 
     /// Get the character at the given position.
@@ -72,7 +101,7 @@ impl CFrameData {
         }
     }
 
-    /// Get the RGB color at the given position.
+    /// Get the foreground RGB color at the given position.
     ///
     /// Returns None if position is out of bounds.
     #[inline]
@@ -87,19 +116,76 @@ impl CFrameData {
         }
     }
 
-    /// Check if a character at the given position should be skipped during rendering.
+    /// Get the background RGB color at the given position.
     ///
-    /// Characters are skipped if they are spaces or have very dark colors (RGB < 5).
+    /// Returns `None` if the frame has no background data or if the position
+    /// is out of bounds.
     #[inline]
-    pub fn should_skip(&self, row: usize, col: usize) -> bool {
+    pub fn bg_rgb_at(&self, row: usize, col: usize) -> Option<(u8, u8, u8)> {
+        let bg = self.bg_rgb.as_ref()?;
+        let width = self.width as usize;
+        let height = self.height as usize;
+        if row >= height || col >= width {
+            return None;
+        }
+        let idx = (row * width + col) * 3;
+        if idx + 2 >= bg.len() {
+            return None;
+        }
+        Some((bg[idx], bg[idx + 1], bg[idx + 2]))
+    }
+
+    /// Returns `true` when the foreground glyph at this position contributes
+    /// visible ink: the character is not a space and the foreground color
+    /// isn't effectively black.
+    #[inline]
+    pub fn has_visible_foreground(&self, row: usize, col: usize) -> bool {
         let width = self.width as usize;
         let idx = row * width + col;
+        if idx >= self.chars.len() {
+            return false;
+        }
         let ch = self.chars[idx];
+        if ch == b' ' {
+            return false;
+        }
         let r = self.rgb[idx * 3];
         let g = self.rgb[idx * 3 + 1];
         let b = self.rgb[idx * 3 + 2];
+        !(r < 5 && g < 5 && b < 5)
+    }
 
-        ch == b' ' || (r < 5 && g < 5 && b < 5)
+    /// Returns `true` when the background at this position contributes a
+    /// visible fill (non-empty bg data, color isn't effectively black).
+    #[inline]
+    pub fn has_visible_background(&self, row: usize, col: usize) -> bool {
+        let Some(bg) = self.bg_rgb.as_ref() else { return false; };
+        let width = self.width as usize;
+        let idx = row * width + col;
+        if idx * 3 + 2 >= bg.len() {
+            return false;
+        }
+        let r = bg[idx * 3];
+        let g = bg[idx * 3 + 1];
+        let b = bg[idx * 3 + 2];
+        !(r < 5 && g < 5 && b < 5)
+    }
+
+    /// Returns `true` when neither the foreground glyph nor the background
+    /// fill at this position contributes any visible content.
+    #[inline]
+    pub fn is_effectively_empty(&self, row: usize, col: usize) -> bool {
+        !self.has_visible_foreground(row, col) && !self.has_visible_background(row, col)
+    }
+
+    /// Check if a cell at the given position should be skipped during rendering.
+    ///
+    /// A cell is skipped when nothing about it produces visible output. With
+    /// per-cell backgrounds, a space whose background is visible is *not*
+    /// skipped (the background still needs to be drawn).
+    #[inline]
+    pub fn should_skip(&self, row: usize, col: usize) -> bool {
+        self.is_effectively_empty(row, col)
     }
 
     /// Get the total number of pixels (characters)
@@ -259,6 +345,7 @@ mod tests {
             height: 2,
             chars: vec![b'A', b'B', b'C', b'D'],
             rgb: vec![255, 0, 0, 0, 255, 0, 0, 0, 255, 128, 128, 128],
+            bg_rgb: None,
         };
 
         assert_eq!(cframe.char_at(0, 0), Some(b'A'));
@@ -268,6 +355,45 @@ mod tests {
         assert_eq!(cframe.rgb_at(0, 0), Some((255, 0, 0)));
         assert_eq!(cframe.rgb_at(0, 1), Some((0, 255, 0)));
         assert_eq!(cframe.rgb_at(1, 1), Some((128, 128, 128)));
+        assert_eq!(cframe.bg_rgb_at(0, 0), None);
+        assert!(!cframe.has_background());
+    }
+
+    #[test]
+    fn test_cframe_with_background() {
+        let cframe = CFrameData::with_background(
+            2,
+            1,
+            vec![b' ', b'X'],
+            vec![0, 0, 0, 255, 255, 255],
+            vec![255, 0, 0, 0, 0, 255],
+        );
+
+        assert!(cframe.has_background());
+        assert_eq!(cframe.bg_rgb_at(0, 0), Some((255, 0, 0)));
+        assert_eq!(cframe.bg_rgb_at(0, 1), Some((0, 0, 255)));
+
+        // Space + invisible foreground but visible background should NOT be skipped.
+        assert!(!cframe.has_visible_foreground(0, 0));
+        assert!(cframe.has_visible_background(0, 0));
+        assert!(!cframe.should_skip(0, 0));
+
+        // Visible foreground glyph is not skipped either.
+        assert!(cframe.has_visible_foreground(0, 1));
+        assert!(!cframe.should_skip(0, 1));
+    }
+
+    #[test]
+    fn test_should_skip_legacy_fg_only() {
+        let cframe = CFrameData::new(
+            3,
+            1,
+            vec![b' ', b'A', b'B'],
+            vec![255, 255, 255, 1, 1, 1, 200, 0, 0],
+        );
+        assert!(cframe.should_skip(0, 0)); // space + no bg
+        assert!(cframe.should_skip(0, 1)); // visible char but black-ish fg, no bg
+        assert!(!cframe.should_skip(0, 2));
     }
 
     #[test]
@@ -281,7 +407,7 @@ mod tests {
 
     #[test]
     fn test_cframe_to_text() {
-        let cframe = CFrameData {width: 2, height: 2, chars: vec![b'A', b'B', b'C', b'D'], rgb: vec![255, 0, 0, 0, 255, 0, 0, 0, 255, 128, 128, 128]};
+        let cframe = CFrameData {width: 2, height: 2, chars: vec![b'A', b'B', b'C', b'D'], rgb: vec![255, 0, 0, 0, 255, 0, 0, 0, 255, 128, 128, 128], bg_rgb: None};
         assert_eq!(cframe.to_text(), "AB\nCD\n");
     }
 

@@ -106,7 +106,13 @@ pub fn parse_cframe(data: &[u8]) -> Result<CFrameData, ParseError> {
         rgb.push(data[offset + 3]); // b
     }
 
-    Ok(CFrameData {width, height, chars, rgb})
+    let legacy_size = expected_size;
+    let trailing_bg_size = pixel_count * 3;
+    if data.len() >= legacy_size + trailing_bg_size {
+        Ok(CFrameData::with_background(width, height, chars, rgb, data[legacy_size..legacy_size + trailing_bg_size].to_vec()))
+    } else {
+        Ok(CFrameData::new(width, height, chars, rgb))
+    }
 }
 
 /// Extract plain text from a .cframe file.
