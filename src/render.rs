@@ -50,13 +50,18 @@ impl Default for RenderConfig {
 ///
 /// This is a platform-agnostic representation of what needs to be drawn.
 /// Each consumer can interpret these commands for their rendering backend.
+///
+/// Rendering order is fixed: paint `background_batches` first, then
+/// `batches` (text) on top.
 #[derive(Clone, Debug)]
 pub struct RenderResult {
     /// Canvas width in pixels
     pub width: f64,
     /// Canvas height in pixels
     pub height: f64,
-    /// Text batches to draw
+    /// Per-cell background rectangle batches (drawn first)
+    pub background_batches: Vec<CellRectBatch>,
+    /// Text batches to draw (drawn after backgrounds)
     pub batches: Vec<TextBatch>,
 }
 
@@ -74,6 +79,32 @@ pub struct TextBatch {
 }
 
 impl TextBatch {
+    /// Get the color as a CSS-compatible string "rgb(r,g,b)"
+    pub fn color_string(&self) -> String {
+        format!("rgb({},{},{})", self.color.0, self.color.1, self.color.2)
+    }
+}
+
+/// A run of horizontally-adjacent cells that share the same background color.
+///
+/// Used by the background-fill pass to coalesce per-cell fills into wider
+/// rectangles, drastically cutting the number of draw calls when large
+/// regions share a color.
+#[derive(Clone, Debug)]
+pub struct CellRectBatch {
+    /// X position of the leftmost cell in this run, in pixels
+    pub x: f64,
+    /// Y position of the row, in pixels
+    pub y: f64,
+    /// Total width of the run, in pixels
+    pub width: f64,
+    /// Row height, in pixels
+    pub height: f64,
+    /// RGB color as (r, g, b)
+    pub color: (u8, u8, u8),
+}
+
+impl CellRectBatch {
     /// Get the color as a CSS-compatible string "rgb(r,g,b)"
     pub fn color_string(&self) -> String {
         format!("rgb({},{},{})", self.color.0, self.color.1, self.color.2)
@@ -114,42 +145,92 @@ pub fn render_cframe(cframe: &CFrameData, config: &RenderConfig) -> RenderResult
     let canvas_width = cframe.width as f64 * char_width;
     let canvas_height = cframe.height as f64 * line_height;
 
-    let mut batches = Vec::new();
     let width = cframe.width as usize;
     let height = cframe.height as usize;
 
+    let background_batches = build_background_batches(cframe, char_width, line_height, width, height);
+    let batches = build_text_batches(cframe, char_width, line_height, width, height);
+
+    RenderResult {width: canvas_width, height: canvas_height, background_batches, batches}
+}
+
+fn build_background_batches(cframe: &CFrameData, char_width: f64, line_height: f64, width: usize, height: usize) -> Vec<CellRectBatch> {
+    let Some(bg) = cframe.bg_rgb.as_ref() else { return Vec::new(); };
+    if bg.len() != width * height * 3 {
+        return Vec::new();
+    }
+    let mut batches = Vec::new();
     for row in 0..height {
         let mut col = 0;
         while col < width {
             let idx = row * width + col;
-            let ch = cframe.chars[idx];
-            let r = cframe.rgb[idx * 3];
-            let g = cframe.rgb[idx * 3 + 1];
-            let b = cframe.rgb[idx * 3 + 2];
+            let r = bg[idx * 3];
+            let g = bg[idx * 3 + 1];
+            let b = bg[idx * 3 + 2];
 
-            // Skip spaces and very dark characters
-            if ch == b' ' || (r < 5 && g < 5 && b < 5) {
+            // Skip cells whose background is effectively black — current
+            // renderers treat the canvas surface itself as the "no fill"
+            // colour, so painting near-black rectangles would only add work.
+            if r < 5 && g < 5 && b < 5 {
                 col += 1;
                 continue;
             }
 
-            // Start a new batch
+            let start_col = col;
+            col += 1;
+            while col < width {
+                let next_idx = row * width + col;
+                let nr = bg[next_idx * 3];
+                let ng = bg[next_idx * 3 + 1];
+                let nb = bg[next_idx * 3 + 2];
+                if nr == r && ng == g && nb == b {
+                    col += 1;
+                } else {
+                    break;
+                }
+            }
+
+            batches.push(CellRectBatch {
+                x: start_col as f64 * char_width,
+                y: row as f64 * line_height,
+                width: (col - start_col) as f64 * char_width,
+                height: line_height,
+                color: (r, g, b),
+            });
+        }
+    }
+    batches
+}
+
+fn build_text_batches(cframe: &CFrameData, char_width: f64, line_height: f64, width: usize, height: usize) -> Vec<TextBatch> {
+    let mut batches = Vec::new();
+    for row in 0..height {
+        let mut col = 0;
+        while col < width {
+            if !cframe.has_visible_foreground(row, col) {
+                col += 1;
+                continue;
+            }
+            let idx = row * width + col;
+            let r = cframe.rgb[idx * 3];
+            let g = cframe.rgb[idx * 3 + 1];
+            let b = cframe.rgb[idx * 3 + 2];
+
             let mut batch_text = String::new();
-            batch_text.push(ch as char);
+            batch_text.push(cframe.chars[idx] as char);
             let start_col = col;
             col += 1;
 
-            // Collect consecutive chars with same color
             while col < width {
+                if !cframe.has_visible_foreground(row, col) {
+                    break;
+                }
                 let next_idx = row * width + col;
-                let next_ch = cframe.chars[next_idx];
                 let nr = cframe.rgb[next_idx * 3];
                 let ng = cframe.rgb[next_idx * 3 + 1];
                 let nb = cframe.rgb[next_idx * 3 + 2];
-
-                if nr == r && ng == g && nb == b && next_ch != b' ' && !(nr < 5 && ng < 5 && nb < 5)
-                {
-                    batch_text.push(next_ch as char);
+                if nr == r && ng == g && nb == b {
+                    batch_text.push(cframe.chars[next_idx] as char);
                     col += 1;
                 } else {
                     break;
@@ -164,8 +245,7 @@ pub fn render_cframe(cframe: &CFrameData, config: &RenderConfig) -> RenderResult
             });
         }
     }
-
-    RenderResult {width: canvas_width, height: canvas_height, batches}
+    batches
 }
 
 /// Web-specific rendering implementation.
@@ -370,7 +450,13 @@ pub mod web {
 
         clear_or_fill_background(&ctx, &layout, config);
 
-        // Draw all batches
+        // Per-cell background fills (drawn first so glyphs composite on top).
+        for batch in &result.background_batches {
+            ctx.set_fill_style_str(&batch.color_string());
+            ctx.fill_rect(batch.x, batch.y, batch.width, batch.height);
+        }
+
+        // Draw all text batches
         for batch in &result.batches {
             ctx.set_fill_style_str(&batch.color_string());
             ctx.fill_text(&batch.text, batch.x, batch.y)
@@ -465,11 +551,13 @@ mod tests {
                 0, 0, 0, // space (skipped)
                 0, 255, 0, // C green
             ],
+            bg_rgb: None,
         };
 
         let config = RenderConfig::new(10.0);
         let result = render_cframe(&cframe, &config);
 
+        assert!(result.background_batches.is_empty());
         assert_eq!(result.batches.len(), 2);
 
         // First batch: "AB" in red
@@ -492,6 +580,7 @@ mod tests {
                 2, 2, 2, // B too dark (skipped)
                 0, 255, 0, // C visible
             ],
+            bg_rgb: None,
         };
 
         let config = RenderConfig::new(10.0);
@@ -509,6 +598,7 @@ mod tests {
             height: 24,
             chars: vec![b' '; 80 * 24],
             rgb: vec![0; 80 * 24 * 3],
+            bg_rgb: None,
         };
 
         let config = RenderConfig::new(10.0);
@@ -518,5 +608,48 @@ mod tests {
         // Height: 24 * 10 * 1.11 = 266.4
         assert_eq!(result.width, 480.0);
         assert!((result.height - 266.4).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_render_with_per_cell_backgrounds() {
+        // Two cells in one row: a space with a red background and 'A' with green bg + white fg.
+        let cframe = CFrameData::with_background(
+            2,
+            1,
+            vec![b' ', b'A'],
+            vec![0, 0, 0, 255, 255, 255],
+            vec![255, 0, 0, 0, 255, 0],
+        );
+
+        let config = RenderConfig::new(10.0);
+        let result = render_cframe(&cframe, &config);
+
+        // Background pass: two batches (different colours)
+        assert_eq!(result.background_batches.len(), 2);
+        assert_eq!(result.background_batches[0].color, (255, 0, 0));
+        assert_eq!(result.background_batches[1].color, (0, 255, 0));
+
+        // Text pass: space dropped, 'A' kept
+        assert_eq!(result.batches.len(), 1);
+        assert_eq!(result.batches[0].text, "A");
+        assert_eq!(result.batches[0].color, (255, 255, 255));
+    }
+
+    #[test]
+    fn test_background_batches_merge_runs() {
+        let cframe = CFrameData::with_background(
+            3,
+            1,
+            vec![b' ', b' ', b' '],
+            vec![0; 9],
+            vec![255, 0, 0, 255, 0, 0, 255, 0, 0],
+        );
+
+        let config = RenderConfig::new(10.0);
+        let result = render_cframe(&cframe, &config);
+
+        assert_eq!(result.background_batches.len(), 1);
+        assert_eq!(result.background_batches[0].color, (255, 0, 0));
+        assert!((result.background_batches[0].width - 18.0).abs() < 0.01); // 3 cells * 10 * 0.6
     }
 }
