@@ -17,6 +17,7 @@ pub struct ProjectDetails {
     pub audio: Option<bool>,
     pub background_color: Option<String>,
     pub color: Option<String>,
+    pub fit_cell_backgrounds: Option<bool>,
 }
 
 impl ProjectDetails {

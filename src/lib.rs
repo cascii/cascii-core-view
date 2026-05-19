@@ -71,7 +71,7 @@ pub use color::{parse_color, FrameColors};
 pub use data::{CFrameData, Frame, FrameFile, PackedCFrameBlob};
 pub use details::ProjectDetails;
 pub use loader::{load_color_frames, load_text_frames, FrameDataProvider, FrameLoaderState, LoadResult, LoadingPhase, LoadingProgress};
-pub use parser::{parse_cframe, parse_cframe_text, parse_packed_cframes, ParseError};
+pub use parser::{encode_cframe, parse_cframe, parse_cframe_text, parse_packed_cframes, split_cframe_extension, ParseError, CFRAME_EXT_FLAG_HAS_BG};
 pub use player::FramePlayer;
 pub use render::{RenderConfig, RenderResult};
 pub use sizing::FontSizing;

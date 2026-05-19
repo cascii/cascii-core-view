@@ -106,7 +106,104 @@ pub fn parse_cframe(data: &[u8]) -> Result<CFrameData, ParseError> {
         rgb.push(data[offset + 3]); // b
     }
 
-    Ok(CFrameData {width, height, chars, rgb})
+    let ext_offset = expected_size;
+    let trailing_bg_size = pixel_count * 3;
+    if data.len() > ext_offset {
+        let trailing = data.len() - ext_offset;
+        // New format: leading flag byte announces the bg payload.
+        if trailing > trailing_bg_size && (data[ext_offset] & CFRAME_EXT_FLAG_HAS_BG) != 0 {
+            let bg_start = ext_offset + 1;
+            return Ok(CFrameData::with_background(width, height, chars, rgb, data[bg_start..bg_start + trailing_bg_size].to_vec()));
+        }
+        // Legacy bg-augmented format: exact bg-sized trailing block, no flag byte.
+        if trailing == trailing_bg_size {
+            return Ok(CFrameData::with_background(width, height, chars, rgb, data[ext_offset..ext_offset + trailing_bg_size].to_vec()));
+        }
+    }
+    Ok(CFrameData::new(width, height, chars, rgb))
+}
+
+/// Trailing extension flag bits used after the legacy `8 + w*h*4` body of a
+/// `.cframe` file. Bit 0 announces that a `w*h*3` background RGB payload
+/// follows.
+pub const CFRAME_EXT_FLAG_HAS_BG: u8 = 0b0000_0001;
+
+/// Encode a [`CFrameData`] back to the `.cframe` binary format.
+///
+/// This is the canonical writer for the format and should be used in place of
+/// raw byte arithmetic when callers need to mutate a frame and persist it
+/// again. It emits the legacy `8 + w*h*4` body, then — if the frame carries
+/// background data — a single flag byte followed by the `w*h*3` background
+/// payload. Files produced here round-trip cleanly through [`parse_cframe`].
+///
+/// ## Validation
+///
+/// Returns an error if `chars.len() != width * height`, if `rgb.len() != width * height * 3`,
+/// or if `bg_rgb` is `Some` and its length doesn't match `width * height * 3`.
+pub fn encode_cframe(frame: &CFrameData) -> Result<Vec<u8>, ParseError> {
+    let pixel_count = frame.width as usize * frame.height as usize;
+    if frame.width == 0 || frame.height == 0 {
+        return Err(ParseError::InvalidDimensions {width: frame.width, height: frame.height});
+    }
+    if frame.chars.len() != pixel_count {
+        return Err(ParseError::FrameCountMismatch {expected: pixel_count, actual: frame.chars.len()});
+    }
+    if frame.rgb.len() != pixel_count * 3 {
+        return Err(ParseError::SizeMismatch {expected: pixel_count * 3, actual: frame.rgb.len()});
+    }
+    let bg_payload = match frame.bg_rgb.as_ref() {
+        Some(bg) if bg.len() == pixel_count * 3 => Some(bg.as_slice()),
+        Some(bg) => return Err(ParseError::SizeMismatch {expected: pixel_count * 3, actual: bg.len()}),
+        None => None,
+    };
+
+    let mut out = Vec::with_capacity(8 + pixel_count * 4 + bg_payload.map(|bg| 1 + bg.len()).unwrap_or(0));
+    out.extend_from_slice(&frame.width.to_le_bytes());
+    out.extend_from_slice(&frame.height.to_le_bytes());
+    for i in 0..pixel_count {
+        out.push(frame.chars[i]);
+        out.push(frame.rgb[i * 3]);
+        out.push(frame.rgb[i * 3 + 1]);
+        out.push(frame.rgb[i * 3 + 2]);
+    }
+    if let Some(bg) = bg_payload {
+        out.push(CFRAME_EXT_FLAG_HAS_BG);
+        out.extend_from_slice(bg);
+    }
+    Ok(out)
+}
+
+/// Inspect a raw `.cframe` blob and split it into `(legacy_body, trailing_extension)`.
+///
+/// This helper is meant for code paths (e.g. byte-level frame editing in
+/// downstream tools) that mutate the legacy body in place and need to preserve
+/// the optional extension area verbatim across the edit. The returned slice
+/// pair lives inside `data`:
+///
+/// - the first slice is the `8 + w*h*4` prefix that older tools understand
+/// - the second slice is everything after that (may be empty, may be a
+///   flag-byte + bg payload, or a flag-less legacy bg payload)
+///
+/// Callers can then operate on the legacy prefix safely and re-emit the
+/// trailing slice unchanged when the structural dimensions stay the same.
+/// When dimensions change, the extension must be regenerated via
+/// [`encode_cframe`] instead, since the bg payload size is tied to the cell
+/// count.
+pub fn split_cframe_extension(data: &[u8]) -> Result<(&[u8], &[u8]), ParseError> {
+    const HEADER_SIZE: usize = 8;
+    if data.len() < HEADER_SIZE {
+        return Err(ParseError::FileTooSmall {expected: HEADER_SIZE, actual: data.len()});
+    }
+    let width = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+    let height = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
+    if width == 0 || height == 0 {
+        return Err(ParseError::InvalidDimensions {width, height});
+    }
+    let legacy_size = HEADER_SIZE + width as usize * height as usize * 4;
+    if data.len() < legacy_size {
+        return Err(ParseError::SizeMismatch {expected: legacy_size, actual: data.len()});
+    }
+    Ok(data.split_at(legacy_size))
 }
 
 /// Extract plain text from a .cframe file.
@@ -235,6 +332,92 @@ mod tests {
             result.rgb,
             vec![255, 0, 0, 0, 255, 0, 0, 0, 255, 128, 128, 128]
         );
+        assert!(result.bg_rgb.is_none());
+    }
+
+    #[test]
+    fn test_parse_cframe_with_flagged_bg() {
+        let mut bytes = vec![
+            2, 0, 0, 0, // width = 2
+            1, 0, 0, 0, // height = 1
+            b'A', 255, 0, 0,
+            b'B', 0, 255, 0,
+        ];
+        bytes.push(CFRAME_EXT_FLAG_HAS_BG);
+        bytes.extend_from_slice(&[200, 100, 50, 50, 100, 200]); // bg RGB for each cell
+
+        let result = parse_cframe(&bytes).unwrap();
+        assert_eq!(result.bg_rgb.as_deref(), Some(&[200, 100, 50, 50, 100, 200][..]));
+    }
+
+    #[test]
+    fn test_encode_cframe_round_trip_fg_only() {
+        let frame = CFrameData::new(2, 1, vec![b'A', b'B'], vec![10, 20, 30, 40, 50, 60]);
+        let bytes = encode_cframe(&frame).unwrap();
+        let parsed = parse_cframe(&bytes).unwrap();
+        assert_eq!(parsed.chars, frame.chars);
+        assert_eq!(parsed.rgb, frame.rgb);
+        assert!(parsed.bg_rgb.is_none());
+        // Confirm no trailing flag byte was emitted.
+        assert_eq!(bytes.len(), 8 + 2 * 4);
+    }
+
+    #[test]
+    fn test_encode_cframe_round_trip_with_bg() {
+        let frame = CFrameData::with_background(2, 1, vec![b'A', b'B'], vec![10, 20, 30, 40, 50, 60], vec![100, 110, 120, 130, 140, 150]);
+        let bytes = encode_cframe(&frame).unwrap();
+        // 8 header + 8 body + 1 flag + 6 bg = 23
+        assert_eq!(bytes.len(), 23);
+        assert_eq!(bytes[16], CFRAME_EXT_FLAG_HAS_BG);
+
+        let parsed = parse_cframe(&bytes).unwrap();
+        assert_eq!(parsed.bg_rgb.as_deref(), Some(&[100, 110, 120, 130, 140, 150][..]));
+    }
+
+    #[test]
+    fn test_encode_cframe_rejects_bg_size_mismatch() {
+        let frame = CFrameData {
+            width: 2,
+            height: 1,
+            chars: vec![b'A', b'B'],
+            rgb: vec![10, 20, 30, 40, 50, 60],
+            bg_rgb: Some(vec![1, 2, 3]), // wrong size: should be 6
+        };
+        assert!(matches!(encode_cframe(&frame), Err(ParseError::SizeMismatch {..})));
+    }
+
+    #[test]
+    fn test_split_cframe_extension_returns_legacy_prefix() {
+        let frame = CFrameData::with_background(2, 1, vec![b'A', b'B'], vec![10, 20, 30, 40, 50, 60], vec![100, 110, 120, 130, 140, 150]);
+        let bytes = encode_cframe(&frame).unwrap();
+        let (legacy, ext) = split_cframe_extension(&bytes).unwrap();
+        assert_eq!(legacy.len(), 8 + 2 * 4);
+        assert_eq!(ext.len(), 1 + 6);
+        assert_eq!(ext[0], CFRAME_EXT_FLAG_HAS_BG);
+    }
+
+    #[test]
+    fn test_split_cframe_extension_empty_when_fg_only() {
+        let frame = CFrameData::new(2, 1, vec![b'A', b'B'], vec![10, 20, 30, 40, 50, 60]);
+        let bytes = encode_cframe(&frame).unwrap();
+        let (legacy, ext) = split_cframe_extension(&bytes).unwrap();
+        assert_eq!(legacy.len(), bytes.len());
+        assert!(ext.is_empty());
+    }
+
+    #[test]
+    fn test_parse_cframe_legacy_bg_without_flag() {
+        // Files written by the pre-flag-byte build: bg payload appended directly with no flag.
+        let mut bytes = vec![
+            2, 0, 0, 0, // width = 2
+            1, 0, 0, 0, // height = 1
+            b'A', 255, 0, 0,
+            b'B', 0, 255, 0,
+        ];
+        bytes.extend_from_slice(&[1, 2, 3, 4, 5, 6]); // bg RGB
+
+        let result = parse_cframe(&bytes).unwrap();
+        assert_eq!(result.bg_rgb.as_deref(), Some(&[1, 2, 3, 4, 5, 6][..]));
     }
 
     #[test]
