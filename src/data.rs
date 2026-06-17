@@ -44,10 +44,9 @@ impl FrameFile {
 ///
 /// - `rgb` is the **foreground** glyph color for every cell, always present
 ///   when this struct exists.
-/// - `bg_rgb` is the **per-cell background** color (3 bytes per cell). It is
-///   `None` for frames produced by the current `.cframe` on-disk format. When
+/// - `bg_rgb` is the **per-cell background** color (3 bytes per cell). When
 ///   present, renderers paint each cell rectangle in this color before
-///   compositing the glyph over it.
+///   compositing the glyph over it. Black is a valid background color and is not treated as "empty."
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CFrameData {
@@ -118,8 +117,7 @@ impl CFrameData {
 
     /// Get the background RGB color at the given position.
     ///
-    /// Returns `None` if the frame has no background data or if the position
-    /// is out of bounds.
+    /// Returns `None` if the frame has no background data or if the position is out of bounds.
     #[inline]
     pub fn bg_rgb_at(&self, row: usize, col: usize) -> Option<(u8, u8, u8)> {
         let bg = self.bg_rgb.as_ref()?;
@@ -135,9 +133,7 @@ impl CFrameData {
         Some((bg[idx], bg[idx + 1], bg[idx + 2]))
     }
 
-    /// Returns `true` when the foreground glyph at this position contributes
-    /// visible ink: the character is not a space and the foreground color
-    /// isn't effectively black.
+    /// Returns `true` when the foreground glyph at this position contributes visible ink: the character is not a space and the foreground color isn't effectively black.
     #[inline]
     pub fn has_visible_foreground(&self, row: usize, col: usize) -> bool {
         let width = self.width as usize;
@@ -155,8 +151,8 @@ impl CFrameData {
         !(r < 5 && g < 5 && b < 5)
     }
 
-    /// Returns `true` when the background at this position contributes a
-    /// visible fill (non-empty bg data, color isn't effectively black).
+    /// Returns `true` when the background at this position contributes a fill. 
+    /// Black is a valid per-cell background color; absence of the payload, not the RGB value, is what makes a cell background empty.
     #[inline]
     pub fn has_visible_background(&self, row: usize, col: usize) -> bool {
         let Some(bg) = self.bg_rgb.as_ref() else { return false; };
@@ -165,10 +161,7 @@ impl CFrameData {
         if idx * 3 + 2 >= bg.len() {
             return false;
         }
-        let r = bg[idx * 3];
-        let g = bg[idx * 3 + 1];
-        let b = bg[idx * 3 + 2];
-        !(r < 5 && g < 5 && b < 5)
+        true
     }
 
     /// Returns `true` when neither the foreground glyph nor the background
@@ -215,8 +208,7 @@ impl CFrameData {
 
 /// Packed multi-frame color data for efficient transport / storage.
 ///
-/// The layout is one shared header followed by tightly packed frames,
-/// where each pixel is stored as `(char, r, g, b)`.
+/// The layout is one shared header followed by tightly packed frames, where each pixel is stored as `(char, r, g, b)`.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PackedCFrameBlob {
@@ -228,12 +220,21 @@ pub struct PackedCFrameBlob {
     pub height: u32,
     /// Raw packed frame bytes without the blob header
     pub frames: Vec<u8>,
+    /// Optional per-frame background RGB data.
+    /// When present, this is `frame_count * width * height * 3` bytes, ordered frame-major, then row-major within each frame.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub bg_frames: Option<Vec<u8>>,
 }
 
 impl PackedCFrameBlob {
     /// Create a new packed blob from validated raw frame bytes.
     pub fn new(frame_count: u32, width: u32, height: u32, frames: Vec<u8>) -> Self {
-        Self {frame_count, width, height, frames}
+        Self {frame_count, width, height, frames, bg_frames: None}
+    }
+
+    /// Create a new packed blob with foreground and background frame data.
+    pub fn with_background(frame_count: u32, width: u32, height: u32, frames: Vec<u8>, bg_frames: Vec<u8>) -> Self {
+        Self {frame_count, width, height, frames, bg_frames: Some(bg_frames)}
     }
 
     /// Number of frames in the blob.
@@ -254,6 +255,18 @@ impl PackedCFrameBlob {
         self.width as usize * self.height as usize * 4
     }
 
+    /// Byte length of one packed background frame.
+    #[inline]
+    pub fn background_frame_byte_len(&self) -> usize {
+        self.width as usize * self.height as usize * 3
+    }
+
+    /// Returns `true` when every packed frame has a background payload.
+    #[inline]
+    pub fn has_background(&self) -> bool {
+        self.bg_frames.as_ref().map(|bg| bg.len() == self.len() * self.background_frame_byte_len()).unwrap_or(false)
+    }
+
     /// Return the raw packed bytes for one frame.
     pub fn frame_bytes(&self, index: usize) -> Option<&[u8]> {
         if index >= self.len() {
@@ -264,6 +277,19 @@ impl PackedCFrameBlob {
         let start = index * frame_len;
         let end = start + frame_len;
         self.frames.get(start..end)
+    }
+
+    /// Return the raw background RGB bytes for one frame.
+    pub fn background_frame_bytes(&self, index: usize) -> Option<&[u8]> {
+        let bg = self.bg_frames.as_ref()?;
+        if index >= self.len() {
+            return None;
+        }
+
+        let frame_len = self.background_frame_byte_len();
+        let start = index * frame_len;
+        let end = start + frame_len;
+        bg.get(start..end)
     }
 
     /// Decode one frame from the packed blob.
@@ -280,7 +306,11 @@ impl PackedCFrameBlob {
             rgb.push(chunk[3]);
         }
 
-        Some(CFrameData::new(self.width, self.height, chars, rgb))
+        if let Some(bg) = self.background_frame_bytes(index) {
+            Some(CFrameData::with_background(self.width, self.height, chars, rgb, bg.to_vec()))
+        } else {
+            Some(CFrameData::new(self.width, self.height, chars, rgb))
+        }
     }
 }
 
@@ -384,6 +414,14 @@ mod tests {
     }
 
     #[test]
+    fn test_black_background_is_not_empty() {
+        let cframe = CFrameData::with_background(1, 1, vec![b' '], vec![0, 0, 0], vec![0, 0, 0]);
+
+        assert!(cframe.has_visible_background(0, 0));
+        assert!(!cframe.should_skip(0, 0));
+    }
+
+    #[test]
     fn test_should_skip_legacy_fg_only() {
         let cframe = CFrameData::new(
             3,
@@ -423,5 +461,16 @@ mod tests {
         assert_eq!(second.chars, vec![b'C', b'D']);
         assert_eq!(second.rgb, vec![0, 0, 255, 255, 255, 255]);
         assert!(blob.decode_frame(2).is_none());
+    }
+
+    #[test]
+    fn test_packed_blob_decode_frame_with_background() {
+        let blob = PackedCFrameBlob::with_background(2, 1, 1, vec![b'A', 255, 0, 0, b'B', 0, 255, 0], vec![10, 20, 30, 40, 50, 60]);
+
+        assert!(blob.has_background());
+        let first = blob.decode_frame(0).unwrap();
+        assert_eq!(first.bg_rgb.as_deref(), Some(&[10, 20, 30][..]));
+        let second = blob.decode_frame(1).unwrap();
+        assert_eq!(second.bg_rgb.as_deref(), Some(&[40, 50, 60][..]));
     }
 }

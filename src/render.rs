@@ -168,14 +168,6 @@ fn build_background_batches(cframe: &CFrameData, char_width: f64, line_height: f
             let g = bg[idx * 3 + 1];
             let b = bg[idx * 3 + 2];
 
-            // Skip cells whose background is effectively black — current
-            // renderers treat the canvas surface itself as the "no fill"
-            // colour, so painting near-black rectangles would only add work.
-            if r < 5 && g < 5 && b < 5 {
-                col += 1;
-                continue;
-            }
-
             let start_col = col;
             col += 1;
             while col < width {
@@ -190,13 +182,7 @@ fn build_background_batches(cframe: &CFrameData, char_width: f64, line_height: f
                 }
             }
 
-            batches.push(CellRectBatch {
-                x: start_col as f64 * char_width,
-                y: row as f64 * line_height,
-                width: (col - start_col) as f64 * char_width,
-                height: line_height,
-                color: (r, g, b),
-            });
+            batches.push(CellRectBatch {x: start_col as f64 * char_width, y: row as f64 * line_height, width: (col - start_col) as f64 * char_width, height: line_height, color: (r, g, b)});
         }
     }
     batches
@@ -237,12 +223,7 @@ fn build_text_batches(cframe: &CFrameData, char_width: f64, line_height: f64, wi
                 }
             }
 
-            batches.push(TextBatch {
-                text: batch_text,
-                x: start_col as f64 * char_width,
-                y: row as f64 * line_height,
-                color: (r, g, b),
-            });
+            batches.push(TextBatch {text: batch_text, x: start_col as f64 * char_width, y: row as f64 * line_height, color: (r, g, b)});
         }
     }
     batches
@@ -551,8 +532,7 @@ mod tests {
                 0, 0, 0, // space (skipped)
                 0, 255, 0, // C green
             ],
-            bg_rgb: None,
-        };
+            bg_rgb: None};
 
         let config = RenderConfig::new(10.0);
         let result = render_cframe(&cframe, &config);
@@ -651,5 +631,18 @@ mod tests {
         assert_eq!(result.background_batches.len(), 1);
         assert_eq!(result.background_batches[0].color, (255, 0, 0));
         assert!((result.background_batches[0].width - 18.0).abs() < 0.01); // 3 cells * 10 * 0.6
+    }
+
+    #[test]
+    fn test_black_background_is_rendered() {
+        let cframe = CFrameData::with_background(2, 1, vec![b' ', b' '], vec![0; 6], vec![0, 0, 0, 12, 12, 12]);
+
+        let config = RenderConfig::new(10.0);
+        let result = render_cframe(&cframe, &config);
+
+        assert_eq!(result.background_batches.len(), 2);
+        assert_eq!(result.background_batches[0].color, (0, 0, 0));
+        assert_eq!(result.background_batches[1].color, (12, 12, 12));
+        assert!(result.batches.is_empty());
     }
 }

@@ -278,8 +278,14 @@ pub fn parse_cframe_text(data: &[u8]) -> Result<String, ParseError> {
 ///     - 1 byte: Red
 ///     - 1 byte: Green
 ///     - 1 byte: Blue
+///   - Optional background extension, when present for every packed frame:
+///     - 1 byte: extension flags (`CFRAME_EXT_FLAG_HAS_BG`)
+///     - `width × height × 3` bytes: background RGB
 ///
-/// Total size: `12 + (frame_count × width × height × 4)` bytes
+/// Foreground-only blobs remain `12 + (frame_count × width × height × 4)`
+/// bytes. The parser also accepts legacy packed background blobs where each
+/// frame stores the background RGB block directly after its foreground body
+/// without the flag byte.
 pub fn parse_packed_cframes(data: &[u8]) -> Result<PackedCFrameBlob, ParseError> {
     const HEADER_SIZE: usize = 12;
 
@@ -299,11 +305,47 @@ pub fn parse_packed_cframes(data: &[u8]) -> Result<PackedCFrameBlob, ParseError>
         return Err(ParseError::InvalidDimensions { width, height });
     }
 
-    let frame_size = width as usize * height as usize * 4;
-    let expected_size = HEADER_SIZE + frame_count as usize * frame_size;
+    let cell_count = width as usize * height as usize;
+    let frame_size = cell_count * 4;
+    let background_size = cell_count * 3;
+    let frame_count_usize = frame_count as usize;
+    let expected_size = HEADER_SIZE + frame_count_usize * frame_size;
 
     if data.len() < expected_size {
         return Err(ParseError::SizeMismatch {expected: expected_size, actual: data.len()});
+    }
+
+    let payload = &data[HEADER_SIZE..];
+    let flagged_stride = frame_size + 1 + background_size;
+    let legacy_background_stride = frame_size + background_size;
+    let flagged_size = frame_count_usize * flagged_stride;
+    let legacy_background_size = frame_count_usize * legacy_background_stride;
+
+    if payload.len() == flagged_size {
+        let mut frames = Vec::with_capacity(frame_count_usize * frame_size);
+        let mut backgrounds = Vec::with_capacity(frame_count_usize * background_size);
+        for frame in 0..frame_count_usize {
+            let offset = frame * flagged_stride;
+            frames.extend_from_slice(&payload[offset..offset + frame_size]);
+            let flag_offset = offset + frame_size;
+            if (payload[flag_offset] & CFRAME_EXT_FLAG_HAS_BG) == 0 {
+                return Ok(PackedCFrameBlob::new(frame_count, width, height, data[HEADER_SIZE..expected_size].to_vec()));
+            }
+            let bg_start = flag_offset + 1;
+            backgrounds.extend_from_slice(&payload[bg_start..bg_start + background_size]);
+        }
+        return Ok(PackedCFrameBlob::with_background(frame_count, width, height, frames, backgrounds));
+    }
+
+    if payload.len() == legacy_background_size {
+        let mut frames = Vec::with_capacity(frame_count_usize * frame_size);
+        let mut backgrounds = Vec::with_capacity(frame_count_usize * background_size);
+        for frame in 0..frame_count_usize {
+            let offset = frame * legacy_background_stride;
+            frames.extend_from_slice(&payload[offset..offset + frame_size]);
+            backgrounds.extend_from_slice(&payload[offset + frame_size..offset + frame_size + background_size]);
+        }
+        return Ok(PackedCFrameBlob::with_background(frame_count, width, height, frames, backgrounds));
     }
 
     Ok(PackedCFrameBlob::new(frame_count, width, height, data[HEADER_SIZE..expected_size].to_vec()))
@@ -468,6 +510,45 @@ mod tests {
 
         let second = blob.decode_frame(1).unwrap();
         assert_eq!(second.chars, vec![b'C', b'D']);
+        assert!(!blob.has_background());
+    }
+
+    #[test]
+    fn test_parse_packed_cframes_with_flagged_backgrounds() {
+        let bytes = vec![
+            2, 0, 0, 0, // frame count = 2
+            1, 0, 0, 0, // width = 1
+            1, 0, 0, 0, // height = 1
+            b'A', 255, 0, 0, CFRAME_EXT_FLAG_HAS_BG, 10, 20, 30,
+            b'B', 0, 255, 0, CFRAME_EXT_FLAG_HAS_BG, 40, 50, 60,
+        ];
+
+        let blob = parse_packed_cframes(&bytes).unwrap();
+        assert!(blob.has_background());
+        assert_eq!(blob.frames, vec![b'A', 255, 0, 0, b'B', 0, 255, 0]);
+
+        let first = blob.decode_frame(0).unwrap();
+        assert_eq!(first.bg_rgb.as_deref(), Some(&[10, 20, 30][..]));
+        let second = blob.decode_frame(1).unwrap();
+        assert_eq!(second.bg_rgb.as_deref(), Some(&[40, 50, 60][..]));
+    }
+
+    #[test]
+    fn test_parse_packed_cframes_with_legacy_backgrounds() {
+        let bytes = vec![
+            2, 0, 0, 0, // frame count = 2
+            1, 0, 0, 0, // width = 1
+            1, 0, 0, 0, // height = 1
+            b'A', 255, 0, 0, 10, 20, 30,
+            b'B', 0, 255, 0, 40, 50, 60,
+        ];
+
+        let blob = parse_packed_cframes(&bytes).unwrap();
+        assert!(blob.has_background());
+        let first = blob.decode_frame(0).unwrap();
+        assert_eq!(first.bg_rgb.as_deref(), Some(&[10, 20, 30][..]));
+        let second = blob.decode_frame(1).unwrap();
+        assert_eq!(second.bg_rgb.as_deref(), Some(&[40, 50, 60][..]));
     }
 
     #[test]

@@ -21,3 +21,4 @@ target
 #.idea/
 .ssmver/
 .docs/
+.DS_Store
