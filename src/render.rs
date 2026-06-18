@@ -11,6 +11,8 @@ pub struct RenderConfig {
     pub sizing: FontSizing,
     /// CSS font family used for web canvas rendering
     pub font_family: String,
+    /// Stroke width in CSS pixels applied before filling glyphs.
+    pub text_stroke_width: f64,
     /// Optional background color for web canvas rendering
     pub background_color: Option<(u8, u8, u8)>,
 }
@@ -18,7 +20,7 @@ pub struct RenderConfig {
 impl RenderConfig {
     /// Create a new render config with the given font size.
     pub fn new(font_size: f64) -> Self {
-        Self {font_size, sizing: FontSizing::default(), font_family: "monospace".to_string(), background_color: None}
+        Self {font_size, sizing: FontSizing::default(), font_family: "monospace".to_string(), text_stroke_width: 0.0, background_color: None}
     }
 
     /// Get the character width for this config.
@@ -310,10 +312,7 @@ pub mod web {
 
         /// Returns `true` when a frame is already cached.
         pub fn has(&self, frame_index: usize) -> bool {
-            self.canvases
-                .get(frame_index)
-                .map(|c| c.is_some())
-                .unwrap_or(false)
+            self.canvases.get(frame_index).map(|c| c.is_some()).unwrap_or(false)
         }
     }
 
@@ -335,6 +334,7 @@ pub mod web {
         config.sizing.char_width_ratio.to_bits().hash(&mut hasher);
         config.sizing.line_height_ratio.to_bits().hash(&mut hasher);
         config.font_family.hash(&mut hasher);
+        config.text_stroke_width.to_bits().hash(&mut hasher);
         config.background_color.hash(&mut hasher);
         dpr.to_bits().hash(&mut hasher);
         hasher.finish()
@@ -345,12 +345,7 @@ pub mod web {
     }
 
     fn get_2d_context(canvas: &HtmlCanvasElement) -> Result<CanvasRenderingContext2d, String> {
-        Ok(canvas
-            .get_context("2d")
-            .map_err(|_| "Failed to get 2d context".to_string())?
-            .ok_or_else(|| "No 2d context available".to_string())?
-            .dyn_into::<CanvasRenderingContext2d>()
-            .map_err(|_| "Failed to cast to CanvasRenderingContext2d".to_string())?)
+        Ok(canvas.get_context("2d").map_err(|_| "Failed to get 2d context".to_string())?.ok_or_else(|| "No 2d context available".to_string())?.dyn_into::<CanvasRenderingContext2d>().map_err(|_| "Failed to cast to CanvasRenderingContext2d".to_string())?)
     }
 
     fn apply_logical_size(canvas: &HtmlCanvasElement, logical_width: f64, logical_height: f64) -> Result<(), String> {
@@ -383,8 +378,7 @@ pub mod web {
         apply_logical_size(canvas, logical_width, logical_height)?;
 
         let ctx = get_2d_context(canvas)?;
-        ctx.set_transform(dpr, 0.0, 0.0, dpr, 0.0, 0.0)
-            .map_err(|_| "Failed to apply DPR transform")?;
+        ctx.set_transform(dpr, 0.0, 0.0, dpr, 0.0, 0.0).map_err(|_| "Failed to apply DPR transform")?;
         ctx.set_font(&config.font_string());
         ctx.set_text_baseline("top");
 
@@ -440,6 +434,11 @@ pub mod web {
         // Draw all text batches
         for batch in &result.batches {
             ctx.set_fill_style_str(&batch.color_string());
+            if config.text_stroke_width > 0.0 {
+                ctx.set_stroke_style_str(&batch.color_string());
+                ctx.set_line_width(config.text_stroke_width);
+                ctx.stroke_text(&batch.text, batch.x, batch.y).map_err(|_| "Failed to stroke text")?;
+            }
             ctx.fill_text(&batch.text, batch.x, batch.y)
                 .map_err(|_| "Failed to fill text")?;
         }
@@ -454,11 +453,7 @@ pub mod web {
     pub fn render_to_offscreen_canvas(cframe: &CFrameData, config: &RenderConfig) -> Result<HtmlCanvasElement, String> {
         let window = web_sys::window().ok_or("No window available")?;
         let document = window.document().ok_or("No document available")?;
-        let canvas = document
-            .create_element("canvas")
-            .map_err(|_| "Failed to create canvas element")?
-            .dyn_into::<HtmlCanvasElement>()
-            .map_err(|_| "Failed to cast element to HtmlCanvasElement")?;
+        let canvas = document.create_element("canvas").map_err(|_| "Failed to create canvas element")?.dyn_into::<HtmlCanvasElement>().map_err(|_| "Failed to cast element to HtmlCanvasElement")?;
 
         render_to_canvas(cframe, &canvas, config)?;
         Ok(canvas)
@@ -494,8 +489,7 @@ pub mod web {
     /// Render plain text to a canvas element.
     ///
     /// This is used as a fallback when no colour frame data is available.
-    /// The text is drawn in white on a transparent background using the
-    /// configured font at the size specified in `config`.
+    /// The text is drawn in white on a transparent background using the configured font at the size specified in `config`.
     pub fn render_text_to_canvas(canvas: &HtmlCanvasElement, text: &str, config: &RenderConfig) -> Result<(), String> {
         let lines: Vec<&str> = text.lines().collect();
         let rows = lines.len();
@@ -503,12 +497,16 @@ pub mod web {
         let (ctx, layout) = layout_canvas(canvas, cols, rows, config)?;
         clear_or_fill_background(&ctx, &layout, config);
         ctx.set_fill_style_str("white");
+        ctx.set_stroke_style_str("white");
+        ctx.set_line_width(config.text_stroke_width.max(0.0));
 
         for (row, line) in lines.iter().enumerate() {
             if !line.is_empty() {
                 let y = row as f64 * layout.line_height;
-                ctx.fill_text(line, 0.0, y)
-                    .map_err(|_| "Failed to fill text")?;
+                if config.text_stroke_width > 0.0 {
+                    ctx.stroke_text(line, 0.0, y).map_err(|_| "Failed to stroke text")?;
+                }
+                ctx.fill_text(line, 0.0, y).map_err(|_| "Failed to fill text")?;
             }
         }
 
