@@ -4,6 +4,10 @@
 //! 1. Text frames (fast) - enables immediate playback
 //! 2. Color data (background) - progressive enhancement
 
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
 use crate::{CFrameData, Frame, FrameFile};
 
 /// Loading phase indicator
@@ -242,8 +246,56 @@ pub trait FrameDataProvider {
     fn read_cframe_bytes(&self, txt_path: &str) -> impl std::future::Future<Output = LoadResult<Option<Vec<u8>>>>;
 }
 
-/// Phase 1: load all text frames sequentially, return them along with the
-/// file list (needed for Phase 2 color loading).
+/// Number of frame text reads issued concurrently by [`load_text_frames`].
+const TEXT_LOAD_CONCURRENCY: usize = 8;
+
+/// Minimal join combinator that drives a batch of same-output futures to
+/// completion, preserving order. Kept local to avoid an executor-specific
+/// dependency; it re-polls every pending future per wake, which is fine for
+/// the small batch sizes used here.
+struct JoinAll<'a, T> {
+    pending: Vec<Option<Pin<Box<dyn Future<Output = T> + 'a>>>>,
+    results: Vec<Option<T>>,
+}
+
+impl<'a, T> JoinAll<'a, T> {
+    fn new(futures: Vec<Pin<Box<dyn Future<Output = T> + 'a>>>) -> Self {
+        let results = futures.iter().map(|_| None).collect();
+        Self {pending: futures.into_iter().map(Some).collect(), results}
+    }
+}
+
+impl<T: Unpin> Future for JoinAll<'_, T> {
+    type Output = Vec<T>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Vec<T>> {
+        let this = self.get_mut();
+        let mut done = true;
+        for (slot, result) in this.pending.iter_mut().zip(this.results.iter_mut()) {
+            if let Some(future) = slot.as_mut() {
+                match future.as_mut().poll(cx) {
+                    Poll::Ready(value) => {
+                        *result = Some(value);
+                        *slot = None;
+                    }
+                    Poll::Pending      => done = false,
+                }
+            }
+        }
+        if done {
+            Poll::Ready(this.results.iter_mut().map(|result| result.take().expect("joined future should have produced a result")).collect())
+        } else {
+            Poll::Pending
+        }
+    }
+}
+
+/// Phase 1: load all text frames, return them along with the file list
+/// (needed for Phase 2 color loading).
+///
+/// Reads are issued in small concurrent batches so network- or IPC-backed
+/// providers aren't serialized on per-file round-trip latency. Frame order
+/// is preserved.
 pub async fn load_text_frames<P: FrameDataProvider>(provider: &P, directory: &str) -> LoadResult<(Vec<Frame>, Vec<FrameFile>)> {
     let frame_files = provider.get_frame_files(directory).await?;
 
@@ -252,9 +304,11 @@ pub async fn load_text_frames<P: FrameDataProvider>(provider: &P, directory: &st
     }
 
     let mut frames = Vec::with_capacity(frame_files.len());
-    for frame_file in &frame_files {
-        let content = provider.read_frame_text(&frame_file.path).await?;
-        frames.push(Frame::text_only(content));
+    for batch in frame_files.chunks(TEXT_LOAD_CONCURRENCY) {
+        let reads = batch.iter().map(|frame_file| Box::pin(provider.read_frame_text(&frame_file.path)) as Pin<Box<dyn Future<Output = LoadResult<String>> + '_>>).collect();
+        for content in JoinAll::new(reads).await {
+            frames.push(Frame::text_only(content?));
+        }
     }
 
     Ok((frames, frame_files))
@@ -264,22 +318,18 @@ pub async fn load_text_frames<P: FrameDataProvider>(provider: &P, directory: &st
 ///
 /// For each frame file, reads raw .cframe bytes, parses them via
 /// `parse_cframe`, then calls `on_frame(index, total, Option<CFrameData>)`
-/// so the caller can store the result. Calls `yield_fn()` before and after
-/// each frame to keep the UI responsive (important in single-threaded WASM
-/// contexts).
+/// so the caller can store the result. Calls `yield_fn()` after each frame
+/// to keep the UI responsive (important in single-threaded WASM contexts).
 pub async fn load_color_frames<P, F, Y, YFut>(provider: &P, frame_files: &[FrameFile], on_frame: F, yield_fn: Y) -> LoadResult<()> where P: FrameDataProvider, F: Fn(usize, usize, Option<CFrameData>), Y: Fn() -> YFut, YFut: std::future::Future<Output = ()> {
     let total = frame_files.len();
     for (i, frame_file) in frame_files.iter().enumerate() {
-        // Let animation/input callbacks run before potentially heavy read+parse work.
-        yield_fn().await;
-
         let cframe = match provider.read_cframe_bytes(&frame_file.path).await? {
             Some(bytes) => crate::parse_cframe(&bytes).ok(),
             None => None,
         };
         on_frame(i, total, cframe);
 
-        // Yield again after storing the decoded frame.
+        // Let animation/input callbacks run between frames.
         yield_fn().await;
     }
     Ok(())
@@ -288,15 +338,19 @@ pub async fn load_color_frames<P, F, Y, YFut>(provider: &P, frame_files: &[Frame
 /// Yield control back to the browser event loop.
 ///
 /// Useful in long-running WASM loops to keep UI responsive while background
-/// loading or pre-rendering progresses.
+/// loading or pre-rendering progresses. Uses a `MessageChannel` round-trip
+/// instead of `setTimeout(0)`, which browsers clamp to ~4ms when nested.
 #[cfg(feature = "web")]
 pub async fn yield_to_event_loop() {
     let promise = js_sys::Promise::new(&mut |resolve, _| {
-        if let Some(window) = web_sys::window() {
-            let _ = window
-                .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 0);
-        } else {
-            let _ = resolve.call0(&wasm_bindgen::JsValue::NULL);
+        match web_sys::MessageChannel::new() {
+            Ok(channel) => {
+                channel.port1().set_onmessage(Some(&resolve));
+                let _ = channel.port2().post_message(&wasm_bindgen::JsValue::NULL);
+            }
+            Err(_) => {
+                let _ = resolve.call0(&wasm_bindgen::JsValue::NULL);
+            }
         }
     });
     let _ = wasm_bindgen_futures::JsFuture::from(promise).await;

@@ -107,12 +107,14 @@ impl CFrameData {
     pub fn rgb_at(&self, row: usize, col: usize) -> Option<(u8, u8, u8)> {
         let width = self.width as usize;
         let height = self.height as usize;
-        if row < height && col < width {
-            let idx = (row * width + col) * 3;
-            Some((self.rgb[idx], self.rgb[idx + 1], self.rgb[idx + 2]))
-        } else {
-            None
+        if row >= height || col >= width {
+            return None;
         }
+        let idx = (row * width + col) * 3;
+        if idx + 2 >= self.rgb.len() {
+            return None;
+        }
+        Some((self.rgb[idx], self.rgb[idx + 1], self.rgb[idx + 2]))
     }
 
     /// Get the background RGB color at the given position.
@@ -145,9 +147,13 @@ impl CFrameData {
         if ch == b' ' {
             return false;
         }
-        let r = self.rgb[idx * 3];
-        let g = self.rgb[idx * 3 + 1];
-        let b = self.rgb[idx * 3 + 2];
+        let rgb_idx = idx * 3;
+        if rgb_idx + 2 >= self.rgb.len() {
+            return false;
+        }
+        let r = self.rgb[rgb_idx];
+        let g = self.rgb[rgb_idx + 1];
+        let b = self.rgb[rgb_idx + 2];
         !(r < 5 && g < 5 && b < 5)
     }
 
@@ -348,9 +354,8 @@ impl Frame {
 
     /// Get the frame dimensions (columns, rows) from the text content.
     pub fn dimensions(&self) -> (usize, usize) {
-        let lines: Vec<&str> = self.content.lines().collect();
-        let rows = lines.len();
-        let cols = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+        let rows = self.content.lines().count();
+        let cols = self.content.lines().map(|l| l.chars().count()).max().unwrap_or(0);
         (cols, rows)
     }
 }
@@ -441,6 +446,15 @@ mod tests {
 
         let frame2 = Frame::text_only("ABCD\nEF".to_string());
         assert_eq!(frame2.dimensions(), (4, 2));
+    }
+
+    #[test]
+    fn test_short_rgb_does_not_panic() {
+        let cframe = CFrameData::new(2, 1, vec![b'A', b'B'], vec![255, 255, 255]);
+
+        assert!(cframe.has_visible_foreground(0, 0));
+        assert!(!cframe.has_visible_foreground(0, 1));
+        assert_eq!(cframe.rgb_at(0, 1), None);
     }
 
     #[test]
