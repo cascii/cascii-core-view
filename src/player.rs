@@ -25,6 +25,10 @@ pub struct FramePlayer {
     color_ready: bool,
     #[cfg(feature = "web")]
     cache: crate::render::web::FrameCanvasCache,
+    /// Cached render key so per-tick rendering skips the DPR lookup and
+    /// config hashing; refreshed whenever the config changes.
+    #[cfg(feature = "web")]
+    render_key: u64,
 }
 
 impl FramePlayer {
@@ -39,6 +43,8 @@ impl FramePlayer {
             color_ready: false,
             #[cfg(feature = "web")]
             cache: crate::render::web::FrameCanvasCache::default(),
+            #[cfg(feature = "web")]
+            render_key: 0,
         }
     }
 
@@ -56,6 +62,7 @@ impl FramePlayer {
         {
             self.cache.resize(frames.len());
             self.cache.invalidate_all();
+            self.refresh_render_key();
         }
         self.frames = frames;
         self.frame_files = frame_files;
@@ -76,6 +83,7 @@ impl FramePlayer {
         {
             self.cache.resize(self.frames.len());
             self.cache.invalidate_all();
+            self.refresh_render_key();
         }
     }
 
@@ -258,7 +266,7 @@ impl FramePlayer {
             self.config.font_size = font_size;
             self.config.sizing = self.sizing.clone();
             #[cfg(feature = "web")]
-            self.cache.invalidate_all();
+            self.refresh_render_key();
         }
     }
 
@@ -272,7 +280,7 @@ impl FramePlayer {
         self.sizing = config.sizing.clone();
         self.config = config;
         #[cfg(feature = "web")]
-        self.cache.invalidate_all();
+        self.refresh_render_key();
     }
 
     /// Borrow the current render config.
@@ -317,6 +325,20 @@ impl FramePlayer {
 
 #[cfg(feature = "web")]
 impl FramePlayer {
+    /// Refresh the cached render key, invalidating the canvas cache when it
+    /// changed.
+    ///
+    /// Config changes call this automatically; call it manually when the
+    /// device pixel ratio may have changed without a config change (e.g. the
+    /// window moved to a different monitor without being resized).
+    pub fn refresh_render_key(&mut self) {
+        let render_key = crate::render::web::current_render_key(&self.config);
+        if self.render_key != render_key {
+            self.render_key = render_key;
+            self.cache.invalidate_for_render_key(render_key);
+        }
+    }
+
     /// Render the current frame to the given canvas.
     ///
     /// Tries the cache first, then renders + caches. Returns `Ok(true)` if
@@ -335,8 +357,7 @@ impl FramePlayer {
             return Ok(false);
         }
 
-        let render_key = crate::render::web::current_render_key(&self.config);
-        self.cache.invalidate_for_render_key(render_key);
+        self.cache.invalidate_for_render_key(self.render_key);
 
         // Try cache first
         if crate::render::web::draw_frame_from_cache(canvas, &self.cache, index)? {
@@ -359,8 +380,7 @@ impl FramePlayer {
     /// Pre-render one frame to the cache. Returns `true` if the frame was
     /// successfully cached (i.e. it has colour data and wasn't cached yet).
     pub fn pre_cache_frame(&mut self, index: usize) -> bool {
-        let render_key = crate::render::web::current_render_key(&self.config);
-        self.cache.invalidate_for_render_key(render_key);
+        self.cache.invalidate_for_render_key(self.render_key);
 
         if self.cache.has(index) {
             return false;
@@ -595,6 +615,6 @@ mod tests {
     #[test]
     fn test_player_interval_ms() {
         let player = FramePlayer::new(24);
-        assert_eq!(player.interval_ms(), 41);
+        assert_eq!(player.interval_ms(), 42);
     }
 }

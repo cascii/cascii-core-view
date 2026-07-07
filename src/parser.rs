@@ -15,6 +15,8 @@ pub enum ParseError {
     InvalidFrameCount { count: u32 },
     /// Frame data count doesn't match existing text frame count
     FrameCountMismatch { expected: usize, actual: usize },
+    /// Packed background extension flags are malformed or inconsistent
+    InvalidExtensionFlags { frame: usize, flags: u8 },
 }
 
 impl std::fmt::Display for ParseError {
@@ -34,6 +36,9 @@ impl std::fmt::Display for ParseError {
             }
             ParseError::FrameCountMismatch { expected, actual } => {
                 write!(f, "Frame count mismatch: expected {}, got {}", expected, actual)
+            }
+            ParseError::InvalidExtensionFlags { frame, flags } => {
+                write!(f, "Invalid extension flags for packed frame {}: 0x{:02x}", frame, flags)
             }
         }
     }
@@ -98,12 +103,9 @@ pub fn parse_cframe(data: &[u8]) -> Result<CFrameData, ParseError> {
     let mut chars = Vec::with_capacity(pixel_count);
     let mut rgb = Vec::with_capacity(pixel_count * 3);
 
-    for i in 0..pixel_count {
-        let offset = HEADER_SIZE + i * 4;
-        chars.push(data[offset]); // char
-        rgb.push(data[offset + 1]); // r
-        rgb.push(data[offset + 2]); // g
-        rgb.push(data[offset + 3]); // b
+    for chunk in data[HEADER_SIZE..expected_size].chunks_exact(4) {
+        chars.push(chunk[0]);
+        rgb.extend_from_slice(&chunk[1..4]);
     }
 
     let ext_offset = expected_size;
@@ -160,11 +162,9 @@ pub fn encode_cframe(frame: &CFrameData) -> Result<Vec<u8>, ParseError> {
     let mut out = Vec::with_capacity(8 + pixel_count * 4 + bg_payload.map(|bg| 1 + bg.len()).unwrap_or(0));
     out.extend_from_slice(&frame.width.to_le_bytes());
     out.extend_from_slice(&frame.height.to_le_bytes());
-    for i in 0..pixel_count {
-        out.push(frame.chars[i]);
-        out.push(frame.rgb[i * 3]);
-        out.push(frame.rgb[i * 3 + 1]);
-        out.push(frame.rgb[i * 3 + 2]);
+    for (&ch, rgb) in frame.chars.iter().zip(frame.rgb.chunks_exact(3)) {
+        out.push(ch);
+        out.extend_from_slice(rgb);
     }
     if let Some(bg) = bg_payload {
         out.push(CFRAME_EXT_FLAG_HAS_BG);
@@ -251,12 +251,9 @@ pub fn parse_cframe_text(data: &[u8]) -> Result<String, ParseError> {
 
     let mut text = String::with_capacity(pixel_count + height);
 
-    for row in 0..height {
-        for col in 0..width {
-            let idx = row * width + col;
-            let offset = HEADER_SIZE + idx * 4;
-            let ch = data[offset] as char;
-            text.push(ch);
+    for row in data[HEADER_SIZE..expected_size].chunks_exact(width * 4) {
+        for cell in row.chunks_exact(4) {
+            text.push(cell[0] as char);
         }
         text.push('\n');
     }
@@ -329,7 +326,7 @@ pub fn parse_packed_cframes(data: &[u8]) -> Result<PackedCFrameBlob, ParseError>
             frames.extend_from_slice(&payload[offset..offset + frame_size]);
             let flag_offset = offset + frame_size;
             if (payload[flag_offset] & CFRAME_EXT_FLAG_HAS_BG) == 0 {
-                return Ok(PackedCFrameBlob::new(frame_count, width, height, data[HEADER_SIZE..expected_size].to_vec()));
+                return Err(ParseError::InvalidExtensionFlags {frame, flags: payload[flag_offset]});
             }
             let bg_start = flag_offset + 1;
             backgrounds.extend_from_slice(&payload[bg_start..bg_start + background_size]);
@@ -531,6 +528,20 @@ mod tests {
         assert_eq!(first.bg_rgb.as_deref(), Some(&[10, 20, 30][..]));
         let second = blob.decode_frame(1).unwrap();
         assert_eq!(second.bg_rgb.as_deref(), Some(&[40, 50, 60][..]));
+    }
+
+    #[test]
+    fn test_parse_packed_cframes_rejects_mixed_flagged_payload() {
+        let bytes = vec![
+            2, 0, 0, 0, // frame count = 2
+            1, 0, 0, 0, // width = 1
+            1, 0, 0, 0, // height = 1
+            b'A', 255, 0, 0, CFRAME_EXT_FLAG_HAS_BG, 10, 20, 30,
+            b'B', 0, 255, 0, 0, 40, 50, 60, // flag byte cleared: corrupt blob
+        ];
+
+        let result = parse_packed_cframes(&bytes);
+        assert!(matches!(result, Err(ParseError::InvalidExtensionFlags { frame: 1, flags: 0 })));
     }
 
     #[test]

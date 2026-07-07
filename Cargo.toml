@@ -1,6 +1,6 @@
 [package]
 name = "cascii-core-view"
-version = "0.7.1"
+version = "0.7.2"
 edition = "2021"
 description = "Core frame display and animation library for ASCII art viewers"
 license = "MIT"
@@ -25,6 +25,8 @@ js-sys = { version = "0.3", optional = true }
 wasm-bindgen-futures = { version = "0.4", optional = true }
 web-sys = { version = "0.3", optional = true, features = [
     "HtmlCanvasElement",
+    "MessageChannel",
+    "MessagePort",
     "CanvasRenderingContext2d",
     "CssStyleDeclaration",
     "Window",

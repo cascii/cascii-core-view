@@ -112,7 +112,7 @@ impl AnimationController {
     /// Use this to configure your timer.
     #[inline]
     pub fn interval_ms(&self) -> u32 {
-        (1000.0 / self.fps as f64).max(1.0) as u32
+        (1000.0 / self.fps as f64).round().max(1.0) as u32
     }
 
     /// Set the loop mode.
@@ -443,9 +443,9 @@ mod tests {
     #[test]
     fn test_interval_ms() {
         let ctrl = AnimationController::new(24);
-        assert_eq!(ctrl.interval_ms(), 41); // 1000/24 ≈ 41.67
+        assert_eq!(ctrl.interval_ms(), 42); // 1000/24 ≈ 41.67
 
         let ctrl2 = AnimationController::new(60);
-        assert_eq!(ctrl2.interval_ms(), 16); // 1000/60 ≈ 16.67
+        assert_eq!(ctrl2.interval_ms(), 17); // 1000/60 ≈ 16.67
     }
 }

@@ -142,8 +142,15 @@ impl CellRectBatch {
 /// assert_eq!(result.batches.len(), 2);
 /// ```
 pub fn render_cframe(cframe: &CFrameData, config: &RenderConfig) -> RenderResult {
-    let char_width = config.char_width();
-    let line_height = config.line_height();
+    render_cframe_with_metrics(cframe, config.char_width(), config.line_height())
+}
+
+/// Generate render commands using explicit glyph metrics.
+///
+/// Useful when the host environment measured the real glyph advance (e.g.
+/// canvas `measureText`) and the config's ratio-derived char width should
+/// not be used.
+pub fn render_cframe_with_metrics(cframe: &CFrameData, char_width: f64, line_height: f64) -> RenderResult {
     let canvas_width = cframe.width as f64 * char_width;
     let canvas_height = cframe.height as f64 * line_height;
 
@@ -161,7 +168,7 @@ fn build_background_batches(cframe: &CFrameData, char_width: f64, line_height: f
     if bg.len() != width * height * 3 {
         return Vec::new();
     }
-    let mut batches = Vec::new();
+    let mut batches = Vec::with_capacity(height);
     for row in 0..height {
         let mut col = 0;
         while col < width {
@@ -191,7 +198,7 @@ fn build_background_batches(cframe: &CFrameData, char_width: f64, line_height: f
 }
 
 fn build_text_batches(cframe: &CFrameData, char_width: f64, line_height: f64, width: usize, height: usize) -> Vec<TextBatch> {
-    let mut batches = Vec::new();
+    let mut batches = Vec::with_capacity(height);
     for row in 0..height {
         let mut col = 0;
         while col < width {
@@ -246,8 +253,17 @@ pub mod web {
     /// a single `drawImage` call per frame.
     #[derive(Clone, Debug, Default)]
     pub struct FrameCanvasCache {
-        canvases: Vec<Option<HtmlCanvasElement>>,
+        canvases: Vec<Option<CachedCanvas>>,
         render_key: u64,
+    }
+
+    /// A cached offscreen canvas plus its CSS logical size, captured once at
+    /// store time so per-frame draws skip the style read + parse round-trip.
+    #[derive(Clone, Debug)]
+    struct CachedCanvas {
+        canvas: HtmlCanvasElement,
+        logical_width: f64,
+        logical_height: f64,
     }
 
     impl FrameCanvasCache {
@@ -301,18 +317,24 @@ pub mod web {
         /// Cache a pre-rendered canvas for a frame.
         pub fn store(&mut self, frame_index: usize, canvas: HtmlCanvasElement) {
             if frame_index < self.canvases.len() {
-                self.canvases[frame_index] = Some(canvas);
+                let logical_width = style_px(&canvas, "width").unwrap_or(canvas.width() as f64);
+                let logical_height = style_px(&canvas, "height").unwrap_or(canvas.height() as f64);
+                self.canvases[frame_index] = Some(CachedCanvas {canvas, logical_width, logical_height});
             }
         }
 
         /// Get a cached canvas for a frame.
         pub fn get(&self, frame_index: usize) -> Option<HtmlCanvasElement> {
-            self.canvases.get(frame_index).and_then(|c| c.clone())
+            self.canvases.get(frame_index).and_then(|entry| entry.as_ref().map(|cached| cached.canvas.clone()))
         }
 
         /// Returns `true` when a frame is already cached.
         pub fn has(&self, frame_index: usize) -> bool {
-            self.canvases.get(frame_index).map(|c| c.is_some()).unwrap_or(false)
+            self.canvases.get(frame_index).map(|entry| entry.is_some()).unwrap_or(false)
+        }
+
+        fn get_cached(&self, frame_index: usize) -> Option<&CachedCanvas> {
+            self.canvases.get(frame_index).and_then(|entry| entry.as_ref())
         }
     }
 
@@ -340,12 +362,18 @@ pub mod web {
         hasher.finish()
     }
 
+    #[cfg(target_arch = "wasm32")]
     fn current_device_pixel_ratio() -> f64 {
         web_sys::window().map(|window| window.device_pixel_ratio()).unwrap_or(1.0).max(1.0)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    fn current_device_pixel_ratio() -> f64 {
+        1.0
+    }
+
     fn get_2d_context(canvas: &HtmlCanvasElement) -> Result<CanvasRenderingContext2d, String> {
-        Ok(canvas.get_context("2d").map_err(|_| "Failed to get 2d context".to_string())?.ok_or_else(|| "No 2d context available".to_string())?.dyn_into::<CanvasRenderingContext2d>().map_err(|_| "Failed to cast to CanvasRenderingContext2d".to_string())?)
+        canvas.get_context("2d").map_err(|_| "Failed to get 2d context".to_string())?.ok_or_else(|| "No 2d context available".to_string())?.dyn_into::<CanvasRenderingContext2d>().map_err(|_| "Failed to cast to CanvasRenderingContext2d".to_string())
     }
 
     fn apply_logical_size(canvas: &HtmlCanvasElement, logical_width: f64, logical_height: f64) -> Result<(), String> {
@@ -355,29 +383,31 @@ pub mod web {
         Ok(())
     }
 
-    fn measure_char_width(canvas: &HtmlCanvasElement, config: &RenderConfig) -> Result<f64, String> {
-        let ctx = get_2d_context(canvas)?;
-        ctx.set_font(&config.font_string());
-        let measured = ctx.measure_text("M").map_err(|_| "Failed to measure text")?.width();
-        if measured > 0.0 {
-            Ok(measured)
-        } else {
-            Ok(config.char_width())
-        }
+    fn style_px(canvas: &HtmlCanvasElement, property: &str) -> Option<f64> {
+        canvas.style().get_property_value(property).ok().and_then(|value| value.trim_end_matches("px").trim().parse::<f64>().ok())
     }
 
     fn layout_canvas(canvas: &HtmlCanvasElement, cols: usize, rows: usize, config: &RenderConfig) -> Result<(CanvasRenderingContext2d, CanvasLayout), String> {
         let dpr = current_device_pixel_ratio();
-        let char_width = measure_char_width(canvas, config)?;
+        let ctx = get_2d_context(canvas)?;
+        ctx.set_font(&config.font_string());
+        let measured = ctx.measure_text("M").map_err(|_| "Failed to measure text")?.width();
+        let char_width = if measured > 0.0 {measured} else {config.char_width()};
         let line_height = config.line_height();
         let logical_width = cols as f64 * char_width;
         let logical_height = rows as f64 * line_height;
 
-        canvas.set_width((logical_width * dpr).ceil() as u32);
-        canvas.set_height((logical_height * dpr).ceil() as u32);
+        let backing_width = (logical_width * dpr).ceil() as u32;
+        let backing_height = (logical_height * dpr).ceil() as u32;
+        if canvas.width() != backing_width {
+            canvas.set_width(backing_width);
+        }
+        if canvas.height() != backing_height {
+            canvas.set_height(backing_height);
+        }
         apply_logical_size(canvas, logical_width, logical_height)?;
 
-        let ctx = get_2d_context(canvas)?;
+        // Resizing resets context state, so font and transform are (re)applied here.
         ctx.set_transform(dpr, 0.0, 0.0, dpr, 0.0, 0.0).map_err(|_| "Failed to apply DPR transform")?;
         ctx.set_font(&config.font_string());
         ctx.set_text_baseline("top");
@@ -417,26 +447,36 @@ pub mod web {
     /// ```
     pub fn render_to_canvas(cframe: &CFrameData, canvas: &HtmlCanvasElement, config: &RenderConfig) -> Result<(), String> {
         let (ctx, layout) = layout_canvas(canvas, cframe.width as usize, cframe.height as usize, config)?;
-        let mut measured_config = config.clone();
-        if config.font_size > 0.0 {
-            measured_config.sizing.char_width_ratio = layout.char_width / config.font_size;
-        }
-        let result = render_cframe(cframe, &measured_config);
+        let result = render_cframe_with_metrics(cframe, layout.char_width, layout.line_height);
 
         clear_or_fill_background(&ctx, &layout, config);
 
         // Per-cell background fills (drawn first so glyphs composite on top).
+        let mut last_fill = None;
         for batch in &result.background_batches {
-            ctx.set_fill_style_str(&batch.color_string());
+            if last_fill != Some(batch.color) {
+                ctx.set_fill_style_str(&batch.color_string());
+                last_fill = Some(batch.color);
+            }
             ctx.fill_rect(batch.x, batch.y, batch.width, batch.height);
         }
 
-        // Draw all text batches
+        // Draw all text batches, only touching style state when the color changes.
+        let stroke = config.text_stroke_width > 0.0;
+        if stroke {
+            ctx.set_line_width(config.text_stroke_width);
+        }
+        let mut last_text = None;
         for batch in &result.batches {
-            ctx.set_fill_style_str(&batch.color_string());
-            if config.text_stroke_width > 0.0 {
-                ctx.set_stroke_style_str(&batch.color_string());
-                ctx.set_line_width(config.text_stroke_width);
+            if last_text != Some(batch.color) {
+                let color = batch.color_string();
+                ctx.set_fill_style_str(&color);
+                if stroke {
+                    ctx.set_stroke_style_str(&color);
+                }
+                last_text = Some(batch.color);
+            }
+            if stroke {
                 ctx.stroke_text(&batch.text, batch.x, batch.y).map_err(|_| "Failed to stroke text")?;
             }
             ctx.fill_text(&batch.text, batch.x, batch.y)
@@ -461,9 +501,21 @@ pub mod web {
 
     /// Draw a pre-rendered offscreen canvas onto a visible canvas.
     pub fn draw_cached_canvas(target: &HtmlCanvasElement, cached: &HtmlCanvasElement) -> Result<(), String> {
-        target.set_width(cached.width());
-        target.set_height(cached.height());
-        apply_logical_size(target, cached.style().get_property_value("width").map_err(|_| "Failed to read cached width style")?.trim_end_matches("px").parse::<f64>().unwrap_or(cached.width() as f64), cached.style().get_property_value("height").map_err(|_| "Failed to read cached height style")?.trim_end_matches("px").parse::<f64>().unwrap_or(cached.height() as f64))?;
+        let logical_width = style_px(cached, "width").unwrap_or(cached.width() as f64);
+        let logical_height = style_px(cached, "height").unwrap_or(cached.height() as f64);
+        draw_cached_canvas_sized(target, cached, logical_width, logical_height)
+    }
+
+    fn draw_cached_canvas_sized(target: &HtmlCanvasElement, cached: &HtmlCanvasElement, logical_width: f64, logical_height: f64) -> Result<(), String> {
+        // Resizing a canvas reallocates and clears its backing store, so only
+        // touch the dimensions when they actually changed.
+        if target.width() != cached.width() {
+            target.set_width(cached.width());
+        }
+        if target.height() != cached.height() {
+            target.set_height(cached.height());
+        }
+        apply_logical_size(target, logical_width, logical_height)?;
 
         let ctx = get_2d_context(target)?;
 
@@ -478,8 +530,8 @@ pub mod web {
     ///
     /// Returns `Ok(true)` when the frame was present in cache and drawn.
     pub fn draw_frame_from_cache(target: &HtmlCanvasElement, cache: &FrameCanvasCache, frame_index: usize) -> Result<bool, String> {
-        if let Some(cached) = cache.get(frame_index) {
-            draw_cached_canvas(target, &cached)?;
+        if let Some(cached) = cache.get_cached(frame_index) {
+            draw_cached_canvas_sized(target, &cached.canvas, cached.logical_width, cached.logical_height)?;
             Ok(true)
         } else {
             Ok(false)

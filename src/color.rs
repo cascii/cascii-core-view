@@ -23,6 +23,9 @@ pub fn parse_color(s: &str) -> Option<(u8, u8, u8)> {
 
 fn parse_hex(s: &str) -> Option<(u8, u8, u8)> {
     let hex = s.strip_prefix('#')?;
+    if !hex.is_ascii() {
+        return None;
+    }
     match hex.len() {
         3 => {
             let r = u8::from_str_radix(&hex[0..1], 16).ok()?;
@@ -41,21 +44,27 @@ fn parse_hex(s: &str) -> Option<(u8, u8, u8)> {
 }
 
 fn parse_named(s: &str) -> Option<(u8, u8, u8)> {
-    match s.to_lowercase().as_str() {
-        "black"         => Some((0, 0, 0)),
-        "white"         => Some((255, 255, 255)),
-        "red"           => Some((255, 0, 0)),
-        "green"         => Some((0, 128, 0)),
-        "blue"          => Some((0, 0, 255)),
-        "yellow"        => Some((255, 255, 0)),
-        "cyan"          => Some((0, 255, 255)),
-        "magenta"       => Some((255, 0, 255)),
-        "gray" | "grey" => Some((128, 128, 128)),
-        "orange"        => Some((255, 165, 0)),
-        "purple"        => Some((128, 0, 128)),
-        "pink"          => Some((255, 192, 203)),
-        "brown"         => Some((139, 69, 19)),
-        _               => None,
+    let bytes = s.as_bytes();
+    if bytes.len() > 7 {
+        return None;
+    }
+    let mut buf = [0u8; 7];
+    for (dst, src) in buf.iter_mut().zip(bytes) { *dst = src.to_ascii_lowercase(); }
+    match &buf[..bytes.len()] {
+        b"black"          => Some((0, 0, 0)),
+        b"white"          => Some((255, 255, 255)),
+        b"red"            => Some((255, 0, 0)),
+        b"green"          => Some((0, 128, 0)),
+        b"blue"           => Some((0, 0, 255)),
+        b"yellow"         => Some((255, 255, 0)),
+        b"cyan"           => Some((0, 255, 255)),
+        b"magenta"        => Some((255, 0, 255)),
+        b"gray" | b"grey" => Some((128, 128, 128)),
+        b"orange"         => Some((255, 165, 0)),
+        b"purple"         => Some((128, 0, 128)),
+        b"pink"           => Some((255, 192, 203)),
+        b"brown"          => Some((139, 69, 19)),
+        _                 => None,
     }
 }
 
@@ -146,6 +155,7 @@ mod tests {
         assert_eq!(parse_color("#zz"),          None);
         assert_eq!(parse_color("#12345"),       None);
         assert_eq!(parse_color("#1234567"),     None);
+        assert_eq!(parse_color("#\u{1F600}xx"),  None); // non-ASCII must not panic
     }
 
     #[test]
