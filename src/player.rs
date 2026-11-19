@@ -111,9 +111,9 @@ impl FramePlayer {
         } else if self.frames.len() != frame_count {
             return Err(ParseError::FrameCountMismatch {expected: self.frames.len(), actual: frame_count});
         } else {
-            for index in 0..frame_count {
+            for (index, frame) in self.frames.iter_mut().enumerate() {
                 let cframe = blob.decode_frame(index).expect("packed blob frame index should be valid");
-                self.frames[index].cframe = Some(cframe);
+                frame.cframe = Some(cframe);
             }
         }
 

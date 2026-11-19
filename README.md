@@ -261,3 +261,115 @@ setInterval(() => {
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.
+
+## Multiple sizes on one timeline
+
+Enable the additive multisize feature to read CSMV assets produced by cascii:
+
+~~~toml
+cascii-core-view = { path = "../cascii-core-view", features = ["multisize"] }
+~~~
+
+~~~rust
+use cascii_core_view::{MultiSizeAsset, MultiSizePlayer};
+
+let bytes = std::fs::read("frames.bin")?;
+let asset = MultiSizeAsset::parse(&bytes)?;
+let mut player = MultiSizePlayer::new(asset);
+player.prepare(8)?;
+player.animation.play();
+player.animation.tick();
+player.select_columns(55)?;
+let frame = player.current()?;
+~~~
+
+MultiSizeAsset borrows encoded bytes, allowing native callers to use a memory
+mapping. Frames are decoded lazily. MultiSizePlayer uses one AnimationController,
+so position, FPS, loop range and pause/play state survive size selection. Render
+current() through the application's existing Frame renderer. Audio stays with
+the application and does not restart when selecting columns.
+
+The decoded cache defaults to 256 frames and 32 MiB; set_cache_limits changes
+both budgets. prepare predecodes a short window, select_columns selects an exact
+generated width, and fit_columns chooses the largest available width that fits,
+clamping below the smallest. Unknown or corrupt sizes return errors while keeping
+the previous selection.
+
+CSMV has a distinct magic/version and preserves complete .cframe payloads,
+including per-cell background colors. Existing single-size player and packed
+format APIs remain unchanged. The fixture under tests/fixtures comes from the
+cascii generator and is also tested by the TypeScript implementation.
+
+~~~sh
+cargo test --features multisize
+cargo check --target wasm32-unknown-unknown --all-features
+~~~
+
+### Sizing controls for Rust frontends
+
+Smaller/larger selects the previous/next generated column count. For an asset with
+55, 58, 61, 67, 73 and 80 columns, smaller at 73 selects 67. At either boundary,
+stepping returns a successful unchanged result, so a held key or repeated click
+does not produce errors.
+
+~~~rust
+use cascii_core_view::{FrameSize, MultiSizePlayer, RenderConfig, SizeMatch};
+
+fn resize_controls(player: &mut MultiSizePlayer<'_>, config: &RenderConfig) -> Result<(), String> {
+    let change = player.smaller()?;
+    if change.changed() {
+        // Request a redraw using player.current() and the same render config.
+    }
+
+    player.larger()?;
+    player.set_size(73)?;                          // Exact columns; rows follow the source.
+    player.set_dimensions(FrameSize {columns: 73, rows: 29})?;
+    player.resize_to(70, SizeMatch::Nearest)?;       // Match an ungenerated requested width.
+    player.fit_dimensions(80, 32)?;                // Both logical grid limits.
+    player.fit_to_container(960.0, 540.0, config)?; // Logical/CSS pixels and current font metrics.
+    player.reset_size()?;                          // Asset's declared default.
+
+    let controls = player.size_state()?;
+    let disable_smaller = !controls.can_smaller;
+    let disable_larger = !controls.can_larger;
+    let picker_options = controls.available;
+    Ok(())
+}
+~~~
+
+set_size requires a generated width. set_dimensions takes an exact FrameSize,
+such as an entry from available_sizes; its row count must match the current frame.
+Rows can change between frames in mixed-aspect-ratio image sequences. Resizing
+selects existing source-derived variants; it does not invent or stretch a grid.
+
+resize_to accepts SizeMatch::Exact, Nearest, Floor and Ceil. Nearest prefers the
+smaller width on ties and clamps at the endpoints. Floor/Ceil return an error
+when no generated size satisfies their respective bound. Existing select_columns
+and fit_columns remain available with their original behavior.
+
+fit_dimensions selects the largest width fitting both column and row limits.
+fit_to_container selects the largest grid fitting a pixel width and height using
+RenderConfig's font_size, character/line metrics and padding. It does not change
+the font or render settings. Nonfinite/invalid inputs and containers smaller than
+every variant return errors while preserving the previous selection.
+
+Every successful control returns SizeChange { previous, current }. changed()
+can drive a redraw or size-changed notification. current_size, available_sizes
+and size_state inspect metadata without decoding frames. size_state also reports
+the default width and whether smaller/larger buttons can step again.
+
+All controls preserve the animation controller, frame position, FPS, loop range
+and pause/play state. Applications retain their audio clock. Target frames are
+decoded and checked against cache budgets before a changed selection becomes
+visible; decode or budget errors keep the previous size and cached frame.
+
+### Per-frame size selections (schema 2)
+
+Multi-size manifests may carry `column_map`, one generated column count per logical frame. Version 2 requires this map; version 1 has no map and continues to use `default_columns`. The CSMV header version must match the manifest schema. All width variants remain in the asset, including those not selected by any frame. JSON and CSV-sidecar manifests use the same map.
+
+Playback follows the saved map by default, including after seeks. A manual size selection overrides the map until `follow_column_map()` (Rust) / `followColumnMap()` (JS) is called. `set_column_map()` / `setColumnMap()` applies a validated live map without changing the animation clock or playback state. Maps must match the frame count and contain only generated widths.
+
+For random-access input, implement `multisize::FrameBytes` and open an
+`IndexedMultiSizeAsset` with the source and its byte length. Opening reads the
+header, manifest and frame index. Each `frame(columns, index)` call reads only
+that frame's payload. An owned `Vec<u8>` can also hold an inflated CSMV tile.

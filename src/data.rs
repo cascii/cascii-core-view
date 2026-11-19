@@ -164,10 +164,7 @@ impl CFrameData {
         let Some(bg) = self.bg_rgb.as_ref() else { return false; };
         let width = self.width as usize;
         let idx = row * width + col;
-        if idx * 3 + 2 >= bg.len() {
-            return false;
-        }
-        true
+        idx * 3 + 2 < bg.len()
     }
 
     /// Returns `true` when neither the foreground glyph nor the background
@@ -305,7 +302,7 @@ impl PackedCFrameBlob {
         let mut chars = Vec::with_capacity(pixel_count);
         let mut rgb = Vec::with_capacity(pixel_count * 3);
 
-        for chunk in bytes.chunks_exact(4) {
+        for chunk in bytes.chunks(4) {
             chars.push(chunk[0]);
             rgb.push(chunk[1]);
             rgb.push(chunk[2]);

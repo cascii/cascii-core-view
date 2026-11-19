@@ -103,7 +103,7 @@ pub fn parse_cframe(data: &[u8]) -> Result<CFrameData, ParseError> {
     let mut chars = Vec::with_capacity(pixel_count);
     let mut rgb = Vec::with_capacity(pixel_count * 3);
 
-    for chunk in data[HEADER_SIZE..expected_size].chunks_exact(4) {
+    for chunk in data[HEADER_SIZE..expected_size].chunks(4) {
         chars.push(chunk[0]);
         rgb.extend_from_slice(&chunk[1..4]);
     }
@@ -162,7 +162,7 @@ pub fn encode_cframe(frame: &CFrameData) -> Result<Vec<u8>, ParseError> {
     let mut out = Vec::with_capacity(8 + pixel_count * 4 + bg_payload.map(|bg| 1 + bg.len()).unwrap_or(0));
     out.extend_from_slice(&frame.width.to_le_bytes());
     out.extend_from_slice(&frame.height.to_le_bytes());
-    for (&ch, rgb) in frame.chars.iter().zip(frame.rgb.chunks_exact(3)) {
+    for (&ch, rgb) in frame.chars.iter().zip(frame.rgb.chunks(3)) {
         out.push(ch);
         out.extend_from_slice(rgb);
     }
@@ -252,7 +252,7 @@ pub fn parse_cframe_text(data: &[u8]) -> Result<String, ParseError> {
     let mut text = String::with_capacity(pixel_count + height);
 
     for row in data[HEADER_SIZE..expected_size].chunks_exact(width * 4) {
-        for cell in row.chunks_exact(4) {
+        for cell in row.chunks(4) {
             text.push(cell[0] as char);
         }
         text.push('\n');
